@@ -353,6 +353,7 @@ export default function Softphone({ selected, subscribe, instances, cards, devic
       else if (type === 'active') setCall((c) => c ? { ...c, state: 'active', startedAt: Date.now() } : c)
       else if (type === 'ended') clearCallSoon(data && data.cause)
       else if (type === 'failed') clearCallSoon(data && data.cause)
+      else if (type === 'mediafailed') toast(t(data?.message || 'Could not start the microphone. Check your browser and system microphone settings, then try again.'))
     }, audioRef.current)
     ph.start(prov, prov.host || location.hostname)
     phone.current = ph

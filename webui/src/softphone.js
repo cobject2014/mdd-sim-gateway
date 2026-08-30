@@ -4,6 +4,20 @@ import JsSIP from 'jssip'
 // Surface JsSIP internals in the console to aid troubleshooting (registration, ICE, etc.)
 try { JsSIP.debug.enable('JsSIP:*') } catch {}
 
+const MICROPHONE_ERROR_MESSAGES = {
+  NotAllowedError: 'Microphone permission is blocked. Allow microphone access for this site in your browser settings, reload the page, and try again.',
+  SecurityError: 'Microphone permission is blocked. Allow microphone access for this site in your browser settings, reload the page, and try again.',
+  PermissionDeniedError: 'Microphone permission is blocked. Allow microphone access for this site in your browser settings, reload the page, and try again.',
+  NotFoundError: 'No microphone was found. Connect or enable an audio input device, then try again.',
+  DevicesNotFoundError: 'No microphone was found. Connect or enable an audio input device, then try again.',
+  NotReadableError: 'The microphone is unavailable. Close other apps using it and check your system microphone permissions, then try again.',
+  TrackStartError: 'The microphone is unavailable. Close other apps using it and check your system microphone permissions, then try again.',
+  AbortError: 'The microphone is unavailable. Close other apps using it and check your system microphone permissions, then try again.',
+}
+
+export const microphoneErrorMessage = (error) => MICROPHONE_ERROR_MESSAGES[error?.name]
+  || 'Could not start the microphone. Check your browser and system microphone settings, then try again.'
+
 export class Softphone {
   // audioEl: a persistent <audio> element rendered by React and handed in via ref. Using one
   // stable, DOM-attached element (instead of a per-call `new Audio()`) is what makes remote
@@ -142,6 +156,10 @@ export class Softphone {
     // only one of them fires.
     session.on('ended', (d) => { if (this.session === session) this.session = null; this.emit('ended', { cause: d && d.cause }) })
     session.on('failed', (d) => { if (this.session === session) this.session = null; this.emit('failed', { cause: d && d.cause }) })
+    session.on('getusermediafailed', (detail) => {
+      const error = detail?.error || detail
+      this.emit('mediafailed', { name: error?.name, message: microphoneErrorMessage(error) })
+    })
     session.on('peerconnection', (ev) => {
       const pc = ev.peerconnection
       // ontrack fires as the remote audio track arrives. te.streams[0] is the usual source,
