@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
-from control.app import config, notify_push
+from control.app import config, main, notify_push
 
 from control.app.notify_push import (
     EV_INCOMING_CALL,
@@ -83,6 +83,21 @@ class NotificationChannelTests(unittest.TestCase):
         settings = {"bark": {"enabled": True, "events": {"incoming_sms": True}}}
         self.assertTrue(notify_push.has_enabled_channel(settings, "incoming_sms"))
         self.assertFalse(notify_push.has_enabled_channel(settings, "incoming_call"))
+
+    def test_main_dispatch_gate_schedules_a_bark_only_sms(self):
+        instance = {"id": "1", "msisdn": "+15413006437"}
+        settings = {"bark": {"enabled": True, "events": {"incoming_sms": True}}}
+        job = object()
+        to_thread = MagicMock(return_value=job)
+        with patch.object(main.cfg, "get_instance", return_value=instance), \
+                patch.object(main.cfg, "get_settings", return_value=settings), \
+                patch.object(main.asyncio, "to_thread", new=to_thread), \
+                patch.object(main.asyncio, "create_task") as create_task:
+            main._dispatch_push(notify_push.EV_INCOMING_SMS, "1", "+13322692937", "hello")
+        to_thread.assert_called_once_with(
+            notify_push.dispatch, settings, notify_push.EV_INCOMING_SMS,
+            instance, "+13322692937", "hello")
+        create_task.assert_called_once_with(job)
 
     def test_message_templates_are_scoped_to_one_event(self):
         sms = build_payload(EV_INCOMING_SMS, {"id": 1, "name": "UK SIM"}, "+44700", "hello")

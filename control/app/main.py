@@ -6130,10 +6130,7 @@ def _dispatch_push(event: str, iid: str, source: str, text: str | None = None):
     if not inst:
         return
     settings = cfg.get_settings()
-    wh = settings.get("webhook") or {}
-    tg = settings.get("telegram") or {}
-    pp = settings.get("pushplus") or {}
-    if not (wh.get("enabled") or tg.get("enabled") or pp.get("enabled")):
+    if not notify_push.has_enabled_channel(settings, event):
         return
     asyncio.create_task(
         asyncio.to_thread(notify_push.dispatch, settings, event, inst, source, text))
