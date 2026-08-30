@@ -111,6 +111,9 @@ def send(config: dict, payload: dict) -> dict:
         try:
             result = response.json()
         except ValueError:
+            content_type = str((response.headers or {}).get("Content-Type") or "").lower()
+            if "json" in content_type:
+                raise RuntimeError("Bark returned an invalid response") from None
             result = None
         if isinstance(result, dict) and "code" in result and str(result["code"]) != "200":
             raise RuntimeError("Bark rejected the notification")

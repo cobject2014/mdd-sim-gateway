@@ -32,6 +32,7 @@ from . import config as cfg
 from . import (store, engine, status as status_mod, sim, card, notify_push, lpa, auth,
                estkme, usbreader, egress, device_state, operations, update_check, cellular_sms,
                sysinfo, failover, carrier_id, allowance, cellular_call, sms_pdu, ussd)
+from .notification_channels import bark
 from .version import VERSION
 from .ami import AmiClient
 from .runtime import RuntimeRegistry
@@ -4005,7 +4006,7 @@ def api_put_settings(body: dict):
             raise HTTPException(400, "invalid new-device defaults")
         if any(not isinstance(value, bool) for value in defaults.values()):
             raise HTTPException(400, "new-device defaults must be boolean")
-    for channel in ("webhook", "telegram", "pushplus"):
+    for channel in ("webhook", "telegram", "pushplus", "bark"):
         try:
             notify_push.validate_message_templates(body.get(channel) or {})
         except ValueError as exc:
@@ -4029,6 +4030,12 @@ def api_put_settings(body: dict):
             raise HTTPException(400, "PushPlus token is required")
         if str(pushplus.get("template") or "html") not in {"html", "txt", "markdown", "json"}:
             raise HTTPException(400, "unsupported PushPlus template")
+    bark_cfg = body.get("bark") or {}
+    if bark_cfg.get("enabled"):
+        try:
+            bark.validate_config(bark_cfg)
+        except ValueError as exc:
+            raise HTTPException(400, f"invalid Bark configuration: {exc}") from None
     if "updates" in body:
         try:
             body["updates"] = update_check.validate_update_settings(body.get("updates"))
@@ -4162,7 +4169,8 @@ def _test_push_payload(event: str = notify_push.EV_INCOMING_SMS) -> dict:
         raise ValueError("unknown notification test event")
     return notify_push.build_payload(
         event,
-        {"id": "test", "name": "Gateway test", "iccid": "", "msisdn": ""},
+        {"id": "test", "name": "Gateway test", "iccid": "",
+         "msisdn": "+15555550123"},
         "+10000000000", "MDD Sim Gateway notification test")
 
 
@@ -4201,6 +4209,18 @@ async def api_pushplus_test(body: dict):
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/notifications/bark/test")
+async def api_bark_test(body: dict):
+    try:
+        event = _notification_test_event(body)
+        bark.validate_config(body)
+        return await asyncio.to_thread(notify_push.send_bark, body,
+                                       _test_push_payload(event))
+    except Exception as exc:
+        log.warning("Bark test failed: %s", type(exc).__name__)
+        raise HTTPException(400, "Bark test delivery failed") from None
 
 
 @app.get("/api/notifications/deliveries")

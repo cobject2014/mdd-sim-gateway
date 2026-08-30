@@ -1,12 +1,14 @@
 import base64
 import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 
 from control.app.notification_channels import bark
+from control.app import main, notify_push
+from fastapi import HTTPException
 
 
 class BarkChannelTests(unittest.TestCase):
@@ -125,6 +127,22 @@ class BarkChannelTests(unittest.TestCase):
             self.assertNotIn(secret, message)
 
     @patch("control.app.notification_channels.bark.requests.Session")
+    def test_send_rejects_an_invalid_json_response_without_echoing_it(self, session_factory):
+        session = MagicMock()
+        response = MagicMock(status_code=200)
+        response.headers = {"Content-Type": "application/json; charset=utf-8"}
+        response.json.side_effect = ValueError("private invalid response")
+        session.post.return_value = response
+        session_factory.return_value = session
+
+        with self.assertRaisesRegex(RuntimeError, "^Bark returned an invalid response$") as failed:
+            bark.send({
+                "push_url": "https://api.day.app/device-secret",
+                "encryption": {"enabled": False},
+            }, {"title": "Title", "content": "private body"})
+        self.assertNotIn("private", str(failed.exception))
+
+    @patch("control.app.notification_channels.bark.requests.Session")
     def test_request_errors_are_sanitized(self, session_factory):
         import requests
 
@@ -137,6 +155,55 @@ class BarkChannelTests(unittest.TestCase):
                 "push_url": "https://api.day.app/device-secret",
                 "encryption": {"enabled": False},
             }, {"title": "Title", "content": "private body"})
+
+    def test_enabled_bark_settings_are_validated_without_leaking_values(self):
+        body = {
+            "bark": {
+                "enabled": True,
+                "push_url": "https://api.day.app/device-secret",
+                "encryption": {"enabled": True, "key": "short",
+                               "iv": "FEDCBA9876543210"},
+            }
+        }
+        with self.assertRaises(HTTPException) as failed:
+            main.api_put_settings(body)
+        self.assertEqual(failed.exception.status_code, 400)
+        detail = str(failed.exception.detail)
+        self.assertIn("invalid Bark configuration", detail)
+        self.assertNotIn("device-secret", detail)
+        self.assertNotIn("FEDCBA9876543210", detail)
+
+
+class BarkApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_endpoint_removes_test_event_and_uses_a_receiving_number(self):
+        body = {
+            "_test_event": notify_push.EV_INCOMING_SMS,
+            "push_url": "https://api.day.app/device-secret",
+            "encryption": {"enabled": False},
+        }
+        with patch.object(main.asyncio, "to_thread", new_callable=AsyncMock,
+                          return_value={"ok": True}) as offload:
+            result = await main.api_bark_test(body)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertNotIn("_test_event", body)
+        self.assertIs(offload.call_args.args[0], notify_push.send_bark)
+        self.assertIs(offload.call_args.args[1], body)
+        payload = offload.call_args.args[2]
+        self.assertEqual(payload["event"], notify_push.EV_INCOMING_SMS)
+        self.assertTrue(payload["msisdn"])
+
+    async def test_endpoint_returns_a_generic_error_for_invalid_secret_config(self):
+        body = {
+            "push_url": "https://api.day.app/device-secret",
+            "encryption": {"enabled": True, "key": "0123456789ABCDEF", "iv": "short"},
+        }
+        with self.assertRaises(HTTPException) as failed:
+            await main.api_bark_test(body)
+        self.assertEqual(failed.exception.status_code, 400)
+        self.assertEqual(failed.exception.detail, "Bark test delivery failed")
+        self.assertNotIn("device-secret", str(failed.exception.detail))
+        self.assertNotIn("0123456789ABCDEF", str(failed.exception.detail))
 
 
 if __name__ == "__main__":
