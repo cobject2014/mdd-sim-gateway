@@ -98,6 +98,8 @@ DEFAULTS = {
             "modem_profiles": [
                 {"name": "DJI/Quectel EC25", "vid": "2c7c", "pid": "0125",
                  "at_interface": 2},
+                {"name": "Quectel EC200A", "vid": "2c7c", "pid": "6005",
+                 "at_interface": 4},
             ],
         },
         # Outbound push notifications for incoming events (SMS / calls). Every channel is

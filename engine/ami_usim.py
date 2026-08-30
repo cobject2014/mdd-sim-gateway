@@ -512,8 +512,15 @@ def read_res_ck_ik(reader_spec, rand, autn):
                 return res, ck, ik, auts
             data, sw1, sw2 = conn.transmit(
                 toBytes("008800812210" + rand.upper() + "10" + autn.upper()))
+            response_available = False
             if sw1 == 0x61:
                 data, sw1, sw2 = conn.transmit(toBytes("00C00000") + [sw2])
+                response_available = True
+            elif (sw1, sw2) == (0x90, 0x00) and data:
+                # Some modem-backed UICCs return the AUTHENTICATE response inline with
+                # 9000 instead of advertising it with 61xx for a following GET RESPONSE.
+                response_available = True
+            if response_available:
                 result = toHexString(data).replace(" ", "")
                 rc = result[0:2]
                 if rc == "DB":  # success
