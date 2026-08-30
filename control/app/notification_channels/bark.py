@@ -52,10 +52,11 @@ def _receiver(payload: dict) -> str:
 
 
 def default_message(payload: dict) -> dict[str, str]:
-    """Build the receiver-centric default used for incoming SMS notifications."""
+    """Build the default incoming-SMS message with distinct sender and receiver roles."""
     receiver = _receiver(payload)
+    sender = str(payload.get("from") or "").strip() or "未知号码"
     return {
-        "title": f"MDD · 收到短信 · {receiver}",
+        "title": f"MDD · 收到短信 · {sender}",
         "content": f"收件号码: {receiver}\n\n短信内容:\n{payload.get('text') or ''}",
     }
 

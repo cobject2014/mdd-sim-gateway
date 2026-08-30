@@ -12,13 +12,14 @@ from fastapi import HTTPException
 
 
 class BarkChannelTests(unittest.TestCase):
-    def test_default_sms_uses_receiving_number_and_text_not_sender(self):
+    def test_default_sms_uses_sender_in_title_and_receiver_in_body(self):
         message = bark.default_message({
             "event": "incoming_sms", "msisdn": "+15413006437",
             "from": "+13322692937", "text": "verification 123456",
             "sim_name": "Tello", "iccid": "8901", "instance": "1",
         })
-        self.assertIn("+15413006437", message["title"])
+        self.assertEqual(message["title"], "MDD · 收到短信 · +13322692937")
+        self.assertNotIn("+15413006437", message["title"])
         self.assertIn("收件号码: +15413006437", message["content"])
         self.assertIn("verification 123456", message["content"])
         self.assertNotIn("+13322692937", message["content"])
@@ -33,7 +34,11 @@ class BarkChannelTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.assertIn(expected, bark.default_message({
                     "event": "incoming_sms", "text": "hello", **payload,
-                })["title"])
+                })["content"])
+
+    def test_missing_sender_is_labelled_unknown(self):
+        message = bark.default_message({"event": "incoming_sms", "text": "hello"})
+        self.assertEqual(message["title"], "MDD · 收到短信 · 未知号码")
 
     def test_encrypted_request_round_trips_and_contains_no_plaintext(self):
         config = {
