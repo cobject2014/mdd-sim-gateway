@@ -15,6 +15,8 @@ The first release will:
 - accept the complete Bark push URL copied from the iOS app;
 - support the public Bark service and self-hosted Bark-compatible servers;
 - forward incoming SMS by default and allow all existing notification events to be enabled individually;
+- make the receiving SIM's own number and the SMS text the default Bark message content so
+  notifications remain unambiguous when the gateway manages multiple SIMs;
 - support the existing per-event title and content templates;
 - support notification group, sound, and interruption level;
 - support optional Bark-compatible AES-128-CBC encrypted pushes, enabled by default for a new Bark configuration;
@@ -87,6 +89,26 @@ The standard configuration merge will preserve new defaults when upgrading an ol
 
 `level` is restricted to `active`, `timeSensitive`, `critical`, or `passive`. The adapter sends optional group and sound fields only when non-empty.
 
+## Incoming SMS Message Contract
+
+For `incoming_sms`, the default Bark notification is intentionally receiver-centric:
+
+```text
+Title: MDD · 收到短信 · <receiving number or SIM identity>
+
+收件号码: <receiving SIM's MSISDN>
+
+短信内容:
+<SMS text>
+```
+
+The receiving number comes from the canonical payload's `msisdn` field, which belongs to the
+SIM line that received the message. It must never be populated from `from`, which is the remote
+sender. When a carrier has not exposed an MSISDN, the title and recipient line fall back to the
+configured SIM name, then ICCID, then line id so two managed SIMs cannot produce indistinguishable
+notifications. The sender remains available as the `{{from}}` template variable for an operator
+who later wants a custom format, but it is not part of the default Bark content requested here.
+
 ## Encrypted Push Flow
 
 When encryption is enabled:
@@ -108,7 +130,8 @@ The existing inbound flow is unchanged:
 
 1. The engine reports an incoming SMS to the control plane.
 2. The control plane stores and deduplicates the message.
-3. `_dispatch_push` builds the canonical event payload.
+3. `_dispatch_push` builds the canonical event payload, including the receiving line's `msisdn`
+   and the SMS `text`.
 4. `notify_push.dispatch` selects enabled channels.
 5. The existing retry wrapper calls `bark.send` up to three times with the current delays.
 6. Delivery history stores channel, event, line id, attempt count, HTTP status, and a sanitized error category only.
@@ -153,6 +176,8 @@ Backend tests will cover:
 - encrypted requests containing no plaintext title, body, sender, or number;
 - no plaintext fallback on invalid encryption configuration;
 - optional Bark fields and event templates;
+- correct receiver-number selection for multiple SIMs, including the no-MSISDN identity fallback;
+- proof that the default Bark content uses `msisdn` and `text`, not the sender number;
 - provider success and failure response handling without secret leakage;
 - dispatch gating and inclusion in `has_enabled_channel`;
 - settings default merge and support-bundle redaction;
