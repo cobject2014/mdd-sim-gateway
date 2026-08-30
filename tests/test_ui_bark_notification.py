@@ -19,7 +19,10 @@ class BarkNotificationUiTests(unittest.TestCase):
         self.assertTrue(COMPONENT_PATH.is_file())
         component = COMPONENT_PATH.read_text(encoding="utf-8")
         self.assertIn("export default function BarkNotificationCard", component)
-        self.assertGreaterEqual(component.count('type="password"'), 3)
+        self.assertIn("function SecretField", component)
+        self.assertIn("type={visible ? 'text' : 'password'}", component)
+        self.assertIn("navigator.clipboard.writeText(value)", component)
+        self.assertEqual(component.count("<SecretField"), 3)
         for field in ("push_url", "verify_tls", "encryption", "key", "iv",
                       "group", "sound", "level"):
             self.assertIn(field, component)
