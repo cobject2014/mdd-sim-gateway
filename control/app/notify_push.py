@@ -27,6 +27,7 @@ from typing import Any
 import requests
 
 from . import egress
+from .notification_channels import bark
 
 log = logging.getLogger("vowifi.push")
 
@@ -152,27 +153,27 @@ def _deliver_with_retry(channel: str, sender, channel_cfg: dict, payload: dict) 
     _record_delivery(entry)
 
 
-def _events_enabled(chan: dict) -> dict:
+def _events_enabled(chan: dict, default: bool = True) -> dict:
     ev = chan.get("events") or {}
     # default: both on if the key is absent (a freshly-enabled channel notifies everything)
     return {
-        EV_INCOMING_SMS: ev.get(EV_INCOMING_SMS, True),
-        EV_INCOMING_CALL: ev.get(EV_INCOMING_CALL, True),
-        EV_HOST_ALERT: ev.get(EV_HOST_ALERT, True),
-        EV_NUMBER_CHANGED: ev.get(EV_NUMBER_CHANGED, True),
-        EV_LINE_UNRECOVERABLE: ev.get(EV_LINE_UNRECOVERABLE, True),
-        EV_KEEPALIVE_RESULT: ev.get(EV_KEEPALIVE_RESULT, True),
-        EV_BALANCE_LOW: ev.get(EV_BALANCE_LOW, True),
-        EV_MISSED_CALL: ev.get(EV_MISSED_CALL, True),
-        EV_VOICEMAIL: ev.get(EV_VOICEMAIL, True),
-        EV_SOFTWARE_UPDATE: ev.get(EV_SOFTWARE_UPDATE, True),
+        EV_INCOMING_SMS: ev.get(EV_INCOMING_SMS, default),
+        EV_INCOMING_CALL: ev.get(EV_INCOMING_CALL, default),
+        EV_HOST_ALERT: ev.get(EV_HOST_ALERT, default),
+        EV_NUMBER_CHANGED: ev.get(EV_NUMBER_CHANGED, default),
+        EV_LINE_UNRECOVERABLE: ev.get(EV_LINE_UNRECOVERABLE, default),
+        EV_KEEPALIVE_RESULT: ev.get(EV_KEEPALIVE_RESULT, default),
+        EV_BALANCE_LOW: ev.get(EV_BALANCE_LOW, default),
+        EV_MISSED_CALL: ev.get(EV_MISSED_CALL, default),
+        EV_VOICEMAIL: ev.get(EV_VOICEMAIL, default),
+        EV_SOFTWARE_UPDATE: ev.get(EV_SOFTWARE_UPDATE, default),
     }
 
 
 def has_enabled_channel(settings: dict, event: str) -> bool:
     return any(bool((settings.get(key) or {}).get("enabled"))
-               and bool(_events_enabled(settings.get(key) or {}).get(event))
-               for key in ("webhook", "telegram", "pushplus"))
+               and bool(_events_enabled(settings.get(key) or {}, default=key != "bark").get(event))
+               for key in ("webhook", "telegram", "pushplus", "bark"))
 
 
 def build_payload(event: str, instance: dict, source: str, text: str | None) -> dict:
@@ -329,13 +330,24 @@ def _render_notification_message(payload: dict, cfg: dict, default: dict) -> dic
     return result
 
 
-def build_notification_message(payload: dict, cfg: dict | None = None) -> dict:
+def build_notification_message(payload: dict, cfg: dict | None = None,
+                               default: dict | None = None) -> dict:
     """Build the shared message, applying an optional per-event title/content override.
 
     Templates deliberately support field replacement only. They cannot evaluate expressions,
     access files or call code, and an unknown field is rejected instead of silently disappearing.
     """
-    return _render_notification_message(payload, cfg or {}, _default_notification_message(payload))
+    base = default if default is not None else _default_notification_message(payload)
+    return _render_notification_message(payload, cfg or {}, base)
+
+
+def send_bark(cfg: dict, payload: dict) -> dict:
+    """Apply the Bark-specific SMS layout, then delegate transport to the isolated adapter."""
+    default = (bark.default_message(payload)
+               if payload.get("event") == EV_INCOMING_SMS
+               else _default_notification_message(payload))
+    message = build_notification_message(payload, cfg, default=default)
+    return bark.send(cfg, {**payload, **message})
 
 
 def _json_setting(value, fallback):
@@ -624,5 +636,8 @@ def dispatch(settings: dict, event: str, instance: dict, source: str, text: str 
         pp = settings.get("pushplus") or {}
         if pp.get("enabled") and _events_enabled(pp).get(event):
             _deliver_with_retry("pushplus", send_pushplus, pp, payload)
+        bark_cfg = settings.get("bark") or {}
+        if bark_cfg.get("enabled") and _events_enabled(bark_cfg, default=False).get(event):
+            _deliver_with_retry("bark", send_bark, bark_cfg, payload)
     except Exception as e:  # noqa
         log.warning("push dispatch error: %r", e)
