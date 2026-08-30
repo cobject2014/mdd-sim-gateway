@@ -155,7 +155,8 @@ def _deliver_with_retry(channel: str, sender, channel_cfg: dict, payload: dict) 
 
 def _events_enabled(chan: dict, default: bool = True) -> dict:
     ev = chan.get("events") or {}
-    # default: both on if the key is absent (a freshly-enabled channel notifies everything)
+    # Legacy channels default missing keys on; a caller can fail closed for a channel such as
+    # Bark whose initial policy deliberately enables only incoming SMS.
     return {
         EV_INCOMING_SMS: ev.get(EV_INCOMING_SMS, default),
         EV_INCOMING_CALL: ev.get(EV_INCOMING_CALL, default),
