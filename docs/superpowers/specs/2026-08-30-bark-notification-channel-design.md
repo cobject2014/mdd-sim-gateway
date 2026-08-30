@@ -1,7 +1,7 @@
 # Bark Notification Channel Design
 
 Date: 2026-08-30
-Status: proposed
+Status: approved
 Reference: SimAdmin notification-channel behavior and Bark's public API documentation
 
 ## Goal
