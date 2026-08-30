@@ -27,6 +27,9 @@ class NotificationChannelTests(unittest.TestCase):
         self.assertTrue(bark_cfg["events"][notify_push.EV_INCOMING_SMS])
         self.assertFalse(bark_cfg["events"][notify_push.EV_INCOMING_CALL])
         self.assertFalse(bark_cfg["events"][notify_push.EV_MISSED_CALL])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_HOST_ALERT])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_NUMBER_CHANGED])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_LINE_UNRECOVERABLE])
 
     def test_bark_saved_encryption_is_merged_with_new_defaults(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(

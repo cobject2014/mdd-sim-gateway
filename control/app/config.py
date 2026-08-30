@@ -162,6 +162,8 @@ DEFAULTS = {
             # require an explicit operator choice so adding Bark does not duplicate alerts.
             "events": {"incoming_sms": True, "incoming_call": False,
                        "missed_call": False, "voicemail_received": False,
+                       "host_alert": False, "number_changed": False,
+                       "line_unrecoverable": False,
                        "keepalive_result": False, "balance_low": False,
                        "software_update": False},
         },
