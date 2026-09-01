@@ -7,6 +7,7 @@ import Esim from './views/Esim.jsx'
 import Keepalive from './views/Keepalive.jsx'
 import { UnifiedOverview, DevicesPage, EgressPage, NotificationsPage, SystemPage, DiagnosticsPage } from './views/UnifiedPages.jsx'
 import { useI18n } from './i18n.jsx'
+import { lineCapabilityState } from './deviceStatus.js'
 
 const NAV = [
   ['overview', 'Overview', '⌂'], ['devices', 'Devices', '▣'], ['calls', 'Calls', '☎'],
@@ -34,14 +35,6 @@ function starCount(value) {
   if (count < 1000) return String(count)
   const thousands = count / 1000
   return `${thousands >= 100 ? Math.round(thousands) : Number(thousands.toFixed(1))}k`
-}
-
-function lineCapabilityState(status, desired = true) {
-  const state = String(status?.state || '').toUpperCase()
-  if (state === 'OK') return 'on'
-  if (state === 'STOPPED') return desired ? 'degraded' : 'off'
-  if (['ERROR', 'NO_CARD', 'PIN_PROBLEM'].includes(state)) return 'error'
-  return desired ? 'starting' : 'off'
 }
 
 function mergeLiveLineStatus(device, status) {

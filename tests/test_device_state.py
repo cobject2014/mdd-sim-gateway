@@ -330,6 +330,20 @@ modem.3gpp.registration-state : unknown
             document = device_state._read(str(app.device_desired_path), {})
             self.assertEqual(document["version"], 2)
             self.assertNotIn("mode", document)
+            self.assertIn("modem-a", document["devices"])
+
+    def test_discovered_device_keeps_its_first_defaults_when_new_device_defaults_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = Orchestrator(root / "data", root, dry_run=True)
+            app.desired_devices([{"id": "modem-a"}])
+
+            document = device_state._read(str(app.device_desired_path), {})
+            document["defaults"]["vowifi_enabled"] = False
+            mdd_orchestrator.atomic_json(app.device_desired_path, document)
+
+            devices, _changed = app.desired_devices([{"id": "modem-a"}])
+            self.assertTrue(devices["modem-a"]["vowifi_enabled"])
 
     class Process:
         def __init__(self, command):

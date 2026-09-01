@@ -1669,21 +1669,26 @@ class Orchestrator:
     def desired_devices(self, discovered: list[dict]) -> tuple[dict, bool]:
         """Load per-device state, creating safe defaults once when necessary."""
         document = read_json(self.device_desired_path)
-        migrated = False
+        changed = False
         if not document:
             defaults = {"cellular_enabled": False, "vowifi_enabled": True,
                         "flight_mode": False}
             document = {"version": 2, "defaults": defaults, "devices": {},
                         "updated_at": int(time.time())}
-            atomic_json(self.device_desired_path, document)
-            migrated = True
+            changed = True
         defaults = self.normalize_capabilities(document.get("defaults"))
         configured = document.get("devices") or {}
         devices = {str(device_id): self.normalize_capabilities(state)
                    for device_id, state in configured.items() if str(device_id)}
         for modem in discovered:
-            devices.setdefault(modem["id"], defaults.copy())
-        return devices, migrated
+            if modem["id"] not in devices:
+                devices[modem["id"]] = defaults.copy()
+                changed = True
+        if changed:
+            document.update(version=2, defaults=defaults, devices=devices,
+                            updated_at=int(time.time()))
+            atomic_json(self.device_desired_path, document)
+        return devices, changed
 
     def apply_device_radios(self, discovered: list[dict], desired_devices: dict,
                             through_modemmanager: bool):
