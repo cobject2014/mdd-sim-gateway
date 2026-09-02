@@ -244,6 +244,34 @@ class HotplugDraftPromotionTests(unittest.IsolatedAsyncioTestCase):
         start.assert_not_called()
         self.assertNotIn("2", main.hub.hotplug_starts)
 
+    async def test_binding_change_rebuilds_an_already_running_line(self):
+        inst = {
+            "id": "2", "iccid": "test-card", "provisioning_state": "ready",
+            "enabled": True,
+        }
+        card = {
+            "present": True, "iccid": "test-card", "hardware_id": "test-reader",
+            "hardware_kind": "reader", "reader_port": "1-4",
+        }
+        main.hub.hotplug_starts.clear()
+        self.addCleanup(main.hub.hotplug_starts.clear)
+
+        with patch.object(main.asyncio, "sleep", new=AsyncMock()), \
+                patch.object(main.cfg, "get_instance", return_value=inst), \
+                patch.object(main.engine, "is_running", return_value=True), \
+                patch.object(main.hub, "cards_list", return_value=[card]), \
+                patch.object(main.device_state, "desired", return_value={}), \
+                patch.object(main.cfg, "get_settings", return_value={}), \
+                patch.object(main.hub, "drop_ami", new=AsyncMock()) as drop_ami, \
+                patch.object(main, "_start_engine_checked") as start, \
+                patch.object(main.hub, "reset_health"), \
+                patch.object(main.hub, "broadcast", new=AsyncMock()):
+            await main._auto_start_hotplugged_line("2", rebuild_if_running=True)
+
+        drop_ami.assert_awaited_once_with("2")
+        start.assert_called_once_with(inst, {}, False)
+        self.assertNotIn("2", main.hub.hotplug_starts)
+
 
 class ImsIdentityLearningTests(unittest.IsolatedAsyncioTestCase):
     def test_modemmanager_number_requires_ims_confirmation(self):
@@ -416,8 +444,50 @@ class ExistingModemCardTests(unittest.IsolatedAsyncioTestCase):
 
         read_card.assert_not_called()
         upsert.assert_called_once_with({"id": "2", **binding})
-        auto_start.assert_awaited_once_with("2")
+        auto_start.assert_awaited_once_with("2", rebuild_if_running=True)
         self.assertEqual(main.hub.cards["VoWiFi Modem new 00 01"]["matched"], "2")
+
+    async def test_native_reader_clears_stale_modem_roles_and_requests_rebuild(self):
+        old = {
+            "id": "2", "iccid": "8944110000000000000", "imsi": "234330123456789",
+            "mcc": "234", "mnc": "33", "smsc": "+447700900000",
+            "pin_reader": "VoWiFi Modem old 00 00",
+            "swu_reader": "VoWiFi Modem old 00 01",
+            "ami_reader": "VoWiFi Modem old 00 02", "reader_index": 1,
+            "reader_port": "", "imei_source_device_id": "old-modem",
+        }
+        card = main.sim.CardInfo(
+            reader="AK9563 00 00", reader_index=0, present=True,
+            iccid=old["iccid"], imsi=old["imsi"], mcc="234", mnc="33",
+            pin_enabled=False, pin_tries=3, smsc=old["smsc"],
+        )
+        saved = dict(old)
+
+        def upsert(update):
+            saved.update(update)
+            return dict(saved)
+
+        main.hub.cards.clear()
+        self.addCleanup(main.hub.cards.clear)
+        with patch.object(main.usbreader, "port_for_index", return_value="1-4"), \
+                patch.object(main, "_modem_identity_for_reader", return_value=None), \
+                patch.object(main, "_find_running_by_reader", return_value=None), \
+                patch.object(main.sim, "read_card", return_value=card), \
+                patch.object(main, "_match_instance_by_iccid",
+                             side_effect=lambda iccid: old if iccid == old["iccid"] else None), \
+                patch.object(main.cfg, "upsert_instance", side_effect=upsert), \
+                patch.object(main, "_auto_start_hotplugged_line",
+                             new=AsyncMock()) as auto_start:
+            await main._on_card_insert("AK9563 00 00", 0)
+            await asyncio.sleep(0)
+
+        self.assertEqual(saved["reader_index"], 0)
+        self.assertEqual(saved["reader_port"], "1-4")
+        self.assertEqual(saved["pin_reader"], "")
+        self.assertEqual(saved["swu_reader"], "")
+        self.assertEqual(saved["ami_reader"], "")
+        self.assertEqual(saved["imei_source_device_id"], "")
+        auto_start.assert_awaited_once_with("2", rebuild_if_running=True)
 
 
 class IdenticalNativeReaderTests(unittest.IsolatedAsyncioTestCase):
