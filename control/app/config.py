@@ -98,6 +98,8 @@ DEFAULTS = {
             "modem_profiles": [
                 {"name": "DJI/Quectel EC25", "vid": "2c7c", "pid": "0125",
                  "at_interface": 2},
+                {"name": "Quectel EC200A", "vid": "2c7c", "pid": "6005",
+                 "at_interface": 4},
             ],
         },
         # Outbound push notifications for incoming events (SMS / calls). Every channel is
@@ -141,6 +143,29 @@ DEFAULTS = {
                        "missed_call": True, "voicemail_received": True,
                        "keepalive_result": True, "balance_low": True,
                        "software_update": True},
+        },
+        "bark": {
+            "enabled": False,
+            "push_url": "",
+            "verify_tls": True,
+            "encryption": {
+                "enabled": True,
+                "algorithm": "aes-128-cbc",
+                "key": "",
+                "iv": "",
+            },
+            "group": "MDD SMS",
+            "sound": "",
+            "level": "active",
+            "message_templates": {},
+            # Bark is intentionally SMS-only by default. Other events remain available but
+            # require an explicit operator choice so adding Bark does not duplicate alerts.
+            "events": {"incoming_sms": True, "incoming_call": False,
+                       "missed_call": False, "voicemail_received": False,
+                       "host_alert": False, "number_changed": False,
+                       "line_unrecoverable": False,
+                       "keepalive_result": False, "balance_low": False,
+                       "software_update": False},
         },
         "security": {
             "https_only": True,
@@ -283,11 +308,14 @@ def load() -> dict:
                                     **(data.get("settings", {}).get("debug", {}))}
         # notification channels: merge one level deep (like tls/retry) so a saved config that
         # predates these keys — or omits the nested `events` map — still gets full defaults.
-        for key in ("webhook", "telegram", "pushplus"):
+        for key in ("webhook", "telegram", "pushplus", "bark"):
             saved = data.get("settings", {}).get(key, {}) or {}
             merged = {**DEFAULTS["settings"][key], **saved}
             merged["events"] = {**DEFAULTS["settings"][key]["events"],
                                 **(saved.get("events", {}) or {})}
+            if key == "bark":
+                merged["encryption"] = {**DEFAULTS["settings"][key]["encryption"],
+                                        **(saved.get("encryption", {}) or {})}
             # Number keeping superseded the old manually-entered activation countdown. Do not
             # preserve its hidden checkbox forever when loading a pre-keepalive config.
             merged["events"].pop("activation_reminder", None)

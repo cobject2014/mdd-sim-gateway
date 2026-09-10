@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
-from control.app import config, notify_push
+from control.app import config, main, notify_push
 
 from control.app.notify_push import (
     EV_INCOMING_CALL,
@@ -21,6 +21,84 @@ from control.app.notify_push import (
 
 
 class NotificationChannelTests(unittest.TestCase):
+    def test_bark_defaults_only_enable_incoming_sms(self):
+        bark_cfg = config.DEFAULTS["settings"]["bark"]
+        self.assertTrue(bark_cfg["encryption"]["enabled"])
+        self.assertTrue(bark_cfg["events"][notify_push.EV_INCOMING_SMS])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_INCOMING_CALL])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_MISSED_CALL])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_HOST_ALERT])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_NUMBER_CHANGED])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_LINE_UNRECOVERABLE])
+
+    def test_bark_saved_encryption_is_merged_with_new_defaults(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+                config, "DATA_DIR", temp), patch.object(
+                    config, "CONFIG_PATH", os.path.join(temp, "config.yaml")):
+            with open(config.CONFIG_PATH, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({"settings": {"bark": {
+                    "encryption": {"key": "0123456789ABCDEF"},
+                    "events": {"incoming_sms": False},
+                }}}, handle)
+            bark_cfg = config.get_settings()["bark"]
+        self.assertEqual(bark_cfg["encryption"]["key"], "0123456789ABCDEF")
+        self.assertEqual(bark_cfg["encryption"]["algorithm"], "aes-128-cbc")
+        self.assertTrue(bark_cfg["encryption"]["enabled"])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_INCOMING_SMS])
+        self.assertFalse(bark_cfg["events"][notify_push.EV_INCOMING_CALL])
+
+    def test_bark_send_applies_receiver_message_and_templates(self):
+        payload = notify_push.build_payload(
+            notify_push.EV_INCOMING_SMS,
+            {"id": "1", "name": "Tello", "msisdn": "+15413006437"},
+            "+13322692937", "hello")
+        with patch("control.app.notify_push.bark.send", return_value={"ok": True}) as send:
+            notify_push.send_bark({"message_templates": {
+                notify_push.EV_INCOMING_SMS: {"title": "Line {{msisdn}}"}
+            }}, payload)
+        enriched = send.call_args.args[1]
+        self.assertEqual(enriched["title"], "Line +15413006437")
+        self.assertIn("收件号码: +15413006437", enriched["content"])
+        self.assertNotIn("+13322692937", enriched["content"])
+
+    def test_dispatch_calls_bark_only_for_enabled_events(self):
+        settings = {"bark": {"enabled": True, "events": {
+            notify_push.EV_INCOMING_SMS: True,
+            notify_push.EV_INCOMING_CALL: False,
+        }}}
+        with patch("control.app.notify_push._deliver_with_retry") as deliver:
+            notify_push.dispatch(settings, notify_push.EV_INCOMING_SMS,
+                                 {"id": "1", "msisdn": "+15413006437"},
+                                 "+13322692937", "hello")
+            deliver.assert_called_once()
+            self.assertEqual(deliver.call_args.args[0], "bark")
+            self.assertIs(deliver.call_args.args[1], notify_push.send_bark)
+
+        with patch("control.app.notify_push._deliver_with_retry") as deliver:
+            notify_push.dispatch(settings, notify_push.EV_INCOMING_CALL,
+                                 {"id": "1"}, "+13322692937")
+            deliver.assert_not_called()
+
+    def test_has_enabled_channel_includes_bark(self):
+        settings = {"bark": {"enabled": True, "events": {"incoming_sms": True}}}
+        self.assertTrue(notify_push.has_enabled_channel(settings, "incoming_sms"))
+        self.assertFalse(notify_push.has_enabled_channel(settings, "incoming_call"))
+
+    def test_main_dispatch_gate_schedules_a_bark_only_sms(self):
+        instance = {"id": "1", "msisdn": "+15413006437"}
+        settings = {"bark": {"enabled": True, "events": {"incoming_sms": True}}}
+        job = object()
+        to_thread = MagicMock(return_value=job)
+        with patch.object(main.cfg, "get_instance", return_value=instance), \
+                patch.object(main.cfg, "get_settings", return_value=settings), \
+                patch.object(main.asyncio, "to_thread", new=to_thread), \
+                patch.object(main.asyncio, "create_task") as create_task:
+            main._dispatch_push(notify_push.EV_INCOMING_SMS, "1", "+13322692937", "hello")
+        to_thread.assert_called_once_with(
+            notify_push.dispatch, settings, notify_push.EV_INCOMING_SMS,
+            instance, "+13322692937", "hello")
+        create_task.assert_called_once_with(job)
+
     def test_message_templates_are_scoped_to_one_event(self):
         sms = build_payload(EV_INCOMING_SMS, {"id": 1, "name": "UK SIM"}, "+44700", "hello")
         cfg = {"message_templates": {EV_INCOMING_SMS: {

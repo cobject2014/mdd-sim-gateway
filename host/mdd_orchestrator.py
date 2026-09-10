@@ -2317,6 +2317,28 @@ class Orchestrator:
         self.exit_last_change[country] = record
         append_jsonl(self.exit_node_history, record)
 
+    @staticmethod
+    def release_tun_dns(exits: list[dict]):
+        """Keep sing-box TUN peers from becoming unusable system DNS servers.
+
+        With strict routing, sing-box publishes the synthetic peer address (the .2 address in
+        each /30) to systemd-resolved as a default-route resolver. This gateway does not run a
+        DNS listener on that address, so host ePDG lookups are sent through the proxy back to the
+        private peer and time out. Reverting only the TUN link's resolver state leaves ePDG /32
+        traffic on the country exit while ordinary name resolution uses the host's real DNS.
+        """
+        resolvectl = shutil.which("resolvectl")
+        if not resolvectl:
+            return
+        for state in exits:
+            interface = str(state.get("interface") or "")
+            if not interface:
+                continue
+            result = run([resolvectl, "revert", interface])
+            if result.returncode:
+                detail = (result.stderr or result.stdout).strip()
+                raise RuntimeError(f"cannot release DNS from {interface}: {detail}")
+
     def apply_singbox(self, config: dict):
         fingerprint = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
         if fingerprint == self.last_proxy_fingerprint and self.singbox and self.singbox.poll() is None:
@@ -2476,6 +2498,7 @@ class Orchestrator:
             if configured:
                 self.apply_xray(self.next_xray_config)
                 self.apply_singbox(config)
+                self.release_tun_dns(configured)
             else:
                 self.apply_xray(None)
             # Ranking must come first: update_selected_nodes then reports the node this cycle

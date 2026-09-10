@@ -48,6 +48,8 @@ def _path_secret(path: tuple[str, ...]) -> bool:
     key = path[-1]
     if _SECRET_KEYS.search(key) or key in {"profile_id", "proxy_profile_id"}:
         return True
+    if "bark" in path and key in {"push_url", "key", "iv"}:
+        return True
     if "egress" in path and key in {"node", "pinned_node", "candidates"}:
         return True
     if "network" in path and "addresses" in path and key == "address":

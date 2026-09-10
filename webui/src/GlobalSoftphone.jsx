@@ -69,6 +69,8 @@ export default function GlobalSoftphone({ instances, excludedId, showToast }) {
             clearTimer.current = setTimeout(() => setCall(null), 1800)
           } else if (type === 'audioblocked') {
             showToast?.(t('Browser blocked call audio. Click the page once and try again.'))
+          } else if (type === 'mediafailed') {
+            showToast?.(t(data?.message || 'Could not start the microphone. Check your browser and system microphone settings, then try again.'))
           }
         }
         phone = new Phone(onEvent, null)

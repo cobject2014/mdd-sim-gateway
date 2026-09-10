@@ -28,6 +28,8 @@ ARG MDD_VERSION=dev
 # reader via the mounted host /run/pcscd socket — matching versions avoids protocol mismatch.
 ARG PCSC_VERSION=2.3.3
 ARG PCSC_SHA256=00b667aa71504ed1d39a48ad377de048c70dbe47229e8c48a3239ab62979c70f
+# pcsc-lite installs its client/shim pair in /usr/lib64, which is not in the default loader
+# path of Debian slim. Link it into the compiler's multi-arch directory for pyscard.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         swig gcc python3-dev pkg-config \
         wget ca-certificates meson ninja-build flex perl \
@@ -37,7 +39,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && echo "${PCSC_SHA256}  pcsc.tar.gz" | sha256sum -c - \
     && tar xf pcsc.tar.gz && cd "PCSC-${PCSC_VERSION}" \
     && meson setup builddir --prefix=/usr -Dpolkit=false -Dlibsystemd=false -Dlibudev=false \
-    && ninja -C builddir && ninja -C builddir install && ldconfig \
+    && ninja -C builddir && ninja -C builddir install \
+    && multiarch="$(gcc -dumpmachine)" \
+    && mkdir -p "/usr/lib/${multiarch}" \
+    && ln -sf /usr/lib64/libpcsclite.so.1 "/usr/lib/${multiarch}/libpcsclite.so.1" \
+    && ln -sf /usr/lib64/libpcsclite_real.so.1 "/usr/lib/${multiarch}/libpcsclite_real.so.1" \
+    && ldconfig \
     && rm -rf /tmp/pcsc.tar.gz "/tmp/PCSC-${PCSC_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 

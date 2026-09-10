@@ -17,6 +17,17 @@ except ImportError:      # the Docker SDK is a manager runtime dependency this d
 
 
 class OperationsTests(unittest.TestCase):
+    def test_bark_settings_secrets_are_redacted(self):
+        value = operations.redact({"bark": {
+            "push_url": "https://api.day.app/device-secret",
+            "encryption": {"key": "0123456789ABCDEF", "iv": "FEDCBA9876543210"},
+            "group": "MDD SMS",
+        }})
+        self.assertEqual(value["bark"]["push_url"], "<redacted>")
+        self.assertEqual(value["bark"]["encryption"]["key"], "<redacted>")
+        self.assertEqual(value["bark"]["encryption"]["iv"], "<redacted>")
+        self.assertEqual(value["bark"]["group"], "MDD SMS")
+
     def test_old_image_cleanup_keeps_live_current_and_trusted_images(self):
         def image(image_id, tags, managed=True):
             value = Mock(id=image_id, tags=tags)
@@ -169,6 +180,10 @@ class OperationsTests(unittest.TestCase):
             "telegram": {"bot_token": "secret"},
             "proxy": {"subscription_url": "https://example.test/sub?token=url-secret"},
             "webhook": {"headers_json": '{"Authorization":"Bearer header-secret"}'},
+            "bark": {
+                "push_url": "https://api.day.app/bark-device-secret",
+                "encryption": {"key": "0123456789ABCDEF", "iv": "FEDCBA9876543210"},
+            },
         }
         with tempfile.TemporaryDirectory() as temp, patch.object(config, "DATA_DIR", temp), patch.object(
                 config, "get_settings", return_value=settings_value):
@@ -183,6 +198,8 @@ class OperationsTests(unittest.TestCase):
                 status = json.loads(archive.read("status-redacted.json"))
                 log = archive.read("logs/sim1-charon.log").decode()
             self.assertNotIn("secret", settings)
+            self.assertNotIn("0123456789ABCDEF", settings)
+            self.assertNotIn("FEDCBA9876543210", settings)
             self.assertNotIn("001122", log)
             self.assertEqual(status["imei"], "<redacted>")
 

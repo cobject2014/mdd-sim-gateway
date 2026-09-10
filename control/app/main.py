@@ -32,6 +32,7 @@ from . import config as cfg
 from . import (store, engine, status as status_mod, sim, card, notify_push, lpa, auth,
                estkme, usbreader, egress, device_state, operations, update_check, cellular_sms,
                sysinfo, failover, carrier_id, allowance, cellular_call, sms_pdu, ussd)
+from .notification_channels import bark
 from .version import VERSION
 from .ami import AmiClient
 from .runtime import RuntimeRegistry
@@ -664,6 +665,7 @@ def _find_running_by_reader(
 
 
 async def _on_card_insert(name, idx):
+    binding_changed = False
     info = {"index": idx, "name": name, "present": True, "iccid": None,
             "pin_enabled": None, "pin_tries": None, "matched": None, "imsi": None,
             "mcc": None, "mnc": None, "mnc_len": None, "smsc": None,
@@ -696,13 +698,15 @@ async def _on_card_insert(name, idx):
             carrier_identity=metadata_inst.get("carrier_identity") or {},
         )
         update = {"id": str(metadata_inst["id"]), **_modem_reader_binding(name)}
-        if any(metadata_inst.get(key) != value
-               for key, value in update.items() if key != "id"):
+        binding_changed = any(metadata_inst.get(key) != value
+                              for key, value in update.items() if key != "id")
+        if binding_changed:
             metadata_inst = await asyncio.to_thread(cfg.upsert_instance, update)
         hub.cards[name] = info
         log.info("card inserted reader=%s (%s) identity=metadata matched=%s",
                  idx, name, info["matched"])
-        asyncio.create_task(_auto_start_hotplugged_line(str(info["matched"])))
+        asyncio.create_task(_auto_start_hotplugged_line(
+            str(info["matched"]), rebuild_if_running=binding_changed))
         return
     # A running engine may already hold this card (manager restart, or pcscd flapped
     # while the engine kept running) — probing it could clash with the engine's card
@@ -764,10 +768,25 @@ async def _on_card_insert(name, idx):
                 # receives a new hardware id, so all three generated reader names change.  The
                 # old names otherwise survive forever and the engine cannot open its PIN/SWu/IMS
                 # channels even though this ICCID was positively matched on the new group.
-                update.update(_modem_reader_binding(name))
+                binding = _modem_reader_binding(name)
             else:
-                update.update(reader_index=idx,
-                              reader_port=str(info.get("reader_port") or ""))
+                binding = {
+                    # These explicit empty values remove modem-only VPCD slot names. A native
+                    # PC/SC reader has one slot which all three engine consumers address via
+                    # reader_index; retaining any old modem name makes the rebuilt engine report
+                    # NO_CARD even though this ICCID was just read successfully on the native
+                    # reader.
+                    "pin_reader": "", "swu_reader": "", "ami_reader": "",
+                    "reader_index": idx,
+                    "reader_port": str(info.get("reader_port") or ""),
+                }
+                if any(inst.get(key) for key in ("pin_reader", "swu_reader", "ami_reader")):
+                    # The previous IMEI belonged to the modem. Clearing its source enables the
+                    # existing one-time migration to attach that identity to this native reader.
+                    binding["imei_source_device_id"] = ""
+            binding_changed = any(inst.get(key) != value
+                                  for key, value in binding.items())
+            update.update(binding)
             if any(inst.get(key) != value for key, value in update.items() if key != "id"):
                 inst = await asyncio.to_thread(cfg.upsert_instance, update)
         elif info.get("iccid") and cfg.card_auto_create_suppressed(info["iccid"]):
@@ -787,10 +806,11 @@ async def _on_card_insert(name, idx):
     log.info("card inserted reader=%s (%s) identity=%s matched=%s", idx, name,
              "available" if info["iccid"] else "unknown", info["matched"])
     if info.get("matched"):
-        asyncio.create_task(_auto_start_hotplugged_line(str(info["matched"])))
+        asyncio.create_task(_auto_start_hotplugged_line(
+            str(info["matched"]), rebuild_if_running=binding_changed))
 
 
-async def _auto_start_hotplugged_line(iid: str) -> None:
+async def _auto_start_hotplugged_line(iid: str, *, rebuild_if_running: bool = False) -> None:
     """Start one enabled matched line after reader enumeration settles.
 
     A modem exposes the same SIM through several VPCD slots, so insert events arrive more
@@ -803,7 +823,10 @@ async def _auto_start_hotplugged_line(iid: str) -> None:
     try:
         await asyncio.sleep(6)
         inst = cfg.get_instance(iid)
-        if not inst or await asyncio.to_thread(engine.is_running, iid):
+        if not inst:
+            return
+        running = await asyncio.to_thread(engine.is_running, iid)
+        if running and not rebuild_if_running:
             return
         cards = hub.cards_list()
         card_info = next((item for item in cards if item.get("present")
@@ -829,6 +852,8 @@ async def _auto_start_hotplugged_line(iid: str) -> None:
             return
         if not inst.get("enabled", True):
             return
+        if running:
+            await hub.drop_ami(iid)
         await asyncio.to_thread(_start_engine_checked, inst, cfg.get_settings(),
                                 os.environ.get("MDD_DEV_MOUNTS", "") == "1")
         hub.reset_health(iid)
@@ -4005,7 +4030,7 @@ def api_put_settings(body: dict):
             raise HTTPException(400, "invalid new-device defaults")
         if any(not isinstance(value, bool) for value in defaults.values()):
             raise HTTPException(400, "new-device defaults must be boolean")
-    for channel in ("webhook", "telegram", "pushplus"):
+    for channel in ("webhook", "telegram", "pushplus", "bark"):
         try:
             notify_push.validate_message_templates(body.get(channel) or {})
         except ValueError as exc:
@@ -4029,6 +4054,12 @@ def api_put_settings(body: dict):
             raise HTTPException(400, "PushPlus token is required")
         if str(pushplus.get("template") or "html") not in {"html", "txt", "markdown", "json"}:
             raise HTTPException(400, "unsupported PushPlus template")
+    bark_cfg = body.get("bark") or {}
+    if bark_cfg.get("enabled"):
+        try:
+            bark.validate_config(bark_cfg)
+        except ValueError as exc:
+            raise HTTPException(400, f"invalid Bark configuration: {exc}") from None
     if "updates" in body:
         try:
             body["updates"] = update_check.validate_update_settings(body.get("updates"))
@@ -4162,7 +4193,8 @@ def _test_push_payload(event: str = notify_push.EV_INCOMING_SMS) -> dict:
         raise ValueError("unknown notification test event")
     return notify_push.build_payload(
         event,
-        {"id": "test", "name": "Gateway test", "iccid": "", "msisdn": ""},
+        {"id": "test", "name": "Gateway test", "iccid": "",
+         "msisdn": "+15555550123"},
         "+10000000000", "MDD Sim Gateway notification test")
 
 
@@ -4201,6 +4233,18 @@ async def api_pushplus_test(body: dict):
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/notifications/bark/test")
+async def api_bark_test(body: dict):
+    try:
+        event = _notification_test_event(body)
+        bark.validate_config(body)
+        return await asyncio.to_thread(notify_push.send_bark, body,
+                                       _test_push_payload(event))
+    except Exception as exc:
+        log.warning("Bark test failed: %s", type(exc).__name__)
+        raise HTTPException(400, "Bark test delivery failed") from None
 
 
 @app.get("/api/notifications/deliveries")
@@ -6110,10 +6154,7 @@ def _dispatch_push(event: str, iid: str, source: str, text: str | None = None):
     if not inst:
         return
     settings = cfg.get_settings()
-    wh = settings.get("webhook") or {}
-    tg = settings.get("telegram") or {}
-    pp = settings.get("pushplus") or {}
-    if not (wh.get("enabled") or tg.get("enabled") or pp.get("enabled")):
+    if not notify_push.has_enabled_channel(settings, event):
         return
     asyncio.create_task(
         asyncio.to_thread(notify_push.dispatch, settings, event, inst, source, text))
