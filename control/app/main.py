@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config as cfg
 from . import (store, engine, status as status_mod, sim, card, notify_push, lpa, auth,
                estkme, usbreader, egress, device_state, operations, update_check, cellular_sms,
-               sysinfo, failover, carrier_id, allowance, cellular_call, sms_pdu, ussd)
+               sysinfo, failover, carrier_id, allowance, cellular_call, sms_pdu, ussd, sim_policy)
 from .notification_channels import bark
 from .version import VERSION
 from .ami import AmiClient
@@ -595,6 +595,8 @@ def _start_engine_checked(inst: dict, settings: dict, dev_mounts: bool = False,
                         f"{cfg.MAX_SIM_LINES} SIM lines. Delete an existing line "
                         "before starting this one."),
         })
+    if sim_policy.protected(inst.get("imsi")):
+        raise HTTPException(409, "This SIM policy disables VoWiFi")
     try:
         # A modem-backed line must be rebound from the bridge's current ICCID metadata on
         # EVERY start, including health-policy rebuilds. Merely finding the old generated
@@ -873,6 +875,8 @@ def _line_auto_start_allowed(inst: dict) -> tuple[bool, str]:
     therefore re-check the live card monitor and the physical device's VoWiFi desired state.
     Explicit user starts keep their existing PIN/card preflight and actionable API errors.
     """
+    if sim_policy.protected(inst.get("imsi")):
+        return False, "sim_sms_only"
     if not inst.get("enabled", True):
         return False, "line_disabled"
     iid = str(inst.get("id") or "")
@@ -3479,6 +3483,63 @@ def _follow_imei_source(old_id: str, new_id: str) -> list[str]:
     return followed
 
 
+def _live_device_imsi(device_id: str) -> str:
+    snapshot = device_state.status()
+    observed = (snapshot.get("devices") or {}).get(device_id) or {}
+    if observed.get("present") and time.time() - float(snapshot.get("updated_at") or 0) <= 60:
+        return sim_policy.normalize((observed.get("cellular") or {}).get("sim_imsi"))
+    card = device_state.native_reader_devices(hub.cards_list()).get(device_id) or {}
+    return sim_policy.normalize(card.get("imsi")) if card.get("present") else ""
+
+
+def _verify_device_imsi(device_id: str, expected: str) -> bool:
+    if device_id.startswith("reader-"):
+        return _live_device_imsi(device_id) == expected
+    observed = (device_state.status().get("devices") or {}).get(device_id) or {}
+    modem_path = str(observed.get("mm_object") or "")
+    if not cellular_sms.MODEM_PATH_RE.fullmatch(modem_path):
+        return False
+    modem = cellular_sms._run_json(["-m", modem_path])
+    sim_path = str(((modem.get("modem") or {}).get("generic") or {}).get("sim")
+                   or modem.get("modem.generic.sim") or "")
+    if not cellular_sms.SIM_PATH_RE.fullmatch(sim_path):
+        return False
+    card = cellular_sms._run_json(["-i", sim_path])
+    current = sim_policy.normalize(((card.get("sim") or {}).get("properties") or {}).get("imsi")
+                                   or card.get("sim.properties.imsi"))
+    return bool(current and current == expected)
+
+
+@app.get("/api/devices/{device_id}/sim-policy")
+async def api_device_sim_policy(device_id: str):
+    return sim_policy.view(_live_device_imsi(device_id))
+
+
+@app.put("/api/devices/{device_id}/sim-policy")
+async def api_device_sim_policy_save(device_id: str, body: dict):
+    if set(body) != {"mode"} or body.get("mode") not in {"normal", "sms_only"}:
+        raise HTTPException(422, "mode must be normal or sms_only")
+    async with capability_lock:
+        observed = (device_state.status().get("devices") or {}).get(device_id) or {}
+        if body["mode"] == "sms_only" and (device_id.startswith("reader-") or
+                (observed.get("actual") or {}).get("cellular_supported") is False):
+            raise HTTPException(409, "SMS-only mode requires a ModemManager cellular modem")
+        imsi = _live_device_imsi(device_id)
+        if not imsi or not await asyncio.to_thread(_verify_device_imsi, device_id, imsi):
+            raise HTTPException(409, "Wait for a live SIM identity before saving its policy")
+        if body["mode"] == "normal" and not device_id.startswith("reader-"):
+            # Publish the safe base state before removing its overlay.
+            device_state.set_desired(device_id, cellular_enabled=False)
+        result = sim_policy.save(imsi, body["mode"])
+        if body["mode"] == "sms_only":
+            for inst in cfg.list_instances():
+                if sim_policy.normalize(inst.get("imsi")) == imsi:
+                    cfg.upsert_instance({"id": str(inst["id"]), "enabled": False})
+                    if await asyncio.to_thread(engine.is_running, str(inst["id"])):
+                        await api_instance_stop(str(inst["id"]))
+        return result
+
+
 async def _unified_devices() -> list[dict]:
     desired_doc, observed_doc, assignments = _device_sources()
     desired_devices = desired_doc.get("devices") or {}
@@ -3541,6 +3602,10 @@ async def _unified_devices() -> list[dict]:
                   or desired_doc.get("defaults") or {
                       "cellular_enabled": False, "vowifi_enabled": True,
                       "flight_mode": False})
+        policy = sim_policy.view(_live_device_imsi(device_id))
+        if policy["mode"] == "sms_only":
+            wanted = {**wanted, "flight_mode": False, "cellular_enabled": False,
+                      "vowifi_enabled": False}
         cell_desired = bool(wanted.get("cellular_enabled"))
         vowifi_desired = bool(wanted.get("vowifi_enabled"))
         flight_desired = bool(wanted.get("flight_mode"))
@@ -3554,6 +3619,8 @@ async def _unified_devices() -> list[dict]:
             vowifi.update(actual="off", available=False, reason="Device not connected")
         elif not inst:
             vowifi.update(available=False, reason="Insert a readable SIM before enabling VoWiFi")
+        elif policy["mode"] == "sms_only":
+            vowifi.update(available=False, reason="Disabled by this SIM's SMS-only policy")
         elif is_draft:
             vowifi.update(available=False,
                           reason="Automatic setup is waiting for SIM or hardware information")
@@ -3593,7 +3660,8 @@ async def _unified_devices() -> list[dict]:
                 else:
                     cell_actual, cell_reason = "error", "Cellular radio is not enabled"
                 cellular_view = {
-                    "registration": registration, "operator": host_cell.get("operator") or "",
+                    "registration": registration, "radio_enabled": radio_on,
+                    "operator": host_cell.get("operator") or "",
                     "signal": host_cell.get("signal"), "apn": host_cell.get("apn") or "",
                     "ip": host_cell.get("ip") or "",
                     "data_active": bool(host_cell.get("data_active")),
@@ -3666,6 +3734,7 @@ async def _unified_devices() -> list[dict]:
                             or hardware_record.get("stable_path") or ""),
             "reader": card_info.get("name") or "", "instance_id": str(inst["id"]) if inst else None,
             "status": line_status,
+            "sim_policy": policy,
             "logical_channels": logical_channels,
             "sim": {"name": (((inst or {}).get("name")
                              or (cellular_view or {}).get("operator") or "SIM") if inst else ""),
@@ -3882,6 +3951,8 @@ async def api_device_capabilities(device_id: str, body: dict):
         device = next((item for item in unified if item["id"] == device_id), None)
         if not device:
             raise HTTPException(404, "no such physical device")
+        if (device.get("sim_policy") or {}).get("mode") == "sms_only" and any(body.values()):
+            raise HTTPException(409, "Change the SIM SMS-only policy first")
         if device.get("device_type") == "reader":
             if "cellular_enabled" in body or "flight_mode" in body:
                 raise HTTPException(400, "a smart-card reader has no cellular radio")
@@ -4481,6 +4552,7 @@ async def api_instances():
     for inst in cfg.list_instances():
         st = _cached_line_status(inst)
         safe = {k: v for k, v in inst.items() if k not in ("pin", "carrier_identity")}
+        safe["sim_policy"] = sim_policy.view(inst.get("imsi"))
         safe["has_pin"] = bool(inst.get("pin"))
         safe["proxy_country_effective"] = egress.line_country(inst)
         # Report the reader index that PHYSICALLY holds this line's SIM right now (ICCID-matched

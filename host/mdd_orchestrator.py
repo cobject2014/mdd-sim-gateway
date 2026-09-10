@@ -1266,6 +1266,8 @@ class Orchestrator:
         # unsupported, so a stale desired flag must not resurrect ModemManager.
         if str(hardware.get("modem_backend") or "auto") == "serial":
             return False
+        if present_ids and read_json(self.root / "sim-policies.json").get("policies"):
+            return True  # Discover SIM identity even when all hardware defaults have RF off.
         if plan["cellular_devices"]:
             return True
         # With RF deliberately disabled, ModemManager has no remaining job: data is off and
@@ -1426,11 +1428,13 @@ class Orchestrator:
         msisdn = next((number for raw in own_numbers
                        if (number := self.normalize_msisdn(raw))), "")
         sim_iccid = ""
+        sim_imsi = ""
         sim_object = self._kv(text, "modem.generic.sim")
         if sim_object and sim_object not in {"--", "/"}:
             sim_detail = run(["mmcli", "-i", sim_object, "--output-keyvalue"])
             if sim_detail.returncode == 0:
                 sim_iccid = self._kv(sim_detail.stdout or "", "sim.properties.iccid")
+                sim_imsi = self._kv(sim_detail.stdout or "", "sim.properties.imsi")
         # Many USB modems keep their hardware power-state at "on" after
         # ModemManager --disable.  The generic state is the authoritative RF state.
         radio_enabled = power == "on" and state not in {
@@ -1451,7 +1455,7 @@ class Orchestrator:
             # These fields are sensitive and are redacted from support bundles by key.
             # The control plane uses the ICCID pair as a fail-closed match before it
             # copies OwnNumbers into a line configuration.
-            "msisdn": msisdn, "sim_iccid": sim_iccid,
+            "msisdn": msisdn, "sim_iccid": sim_iccid, "sim_imsi": sim_imsi,
         }
         bearer_paths = re.findall(r"modem\.generic\.bearers\.value\[\d+\]\s*:\s*(\S+)", text)
         for bearer in bearer_paths:
@@ -1685,6 +1689,16 @@ class Orchestrator:
             devices.setdefault(modem["id"], defaults.copy())
         return devices, migrated
 
+    @staticmethod
+    def sim_policy_intent(wanted: dict, imsi: str, policies: dict) -> dict:
+        if (policies.get(imsi) or {}).get("mode") == "sms_only":
+            return {**wanted, "flight_mode": False, "cellular_enabled": False,
+                    "vowifi_enabled": False}
+        if policies and not re.fullmatch(r"\d{14,15}", str(imsi or "")):
+            # No USB/TTY-based cached SIM identity: hold services pending a live SIM read.
+            return {**wanted, "cellular_enabled": False, "vowifi_enabled": False}
+        return dict(wanted)
+
     def apply_device_radios(self, discovered: list[dict], desired_devices: dict,
                             through_modemmanager: bool):
         """Apply independent RF (flight mode) and cellular-data intent per modem."""
@@ -1695,11 +1709,17 @@ class Orchestrator:
         # pyserial DTR/RTS control transfer with EPROTO; the subsequent bridge then inherits
         # an unresponsive port and times out on ATE0.  The bridge has its own virtualisation-
         # tolerant serial implementation, so leave the modem entirely to it in this mode.
+        policies = read_json(self.root / "sim-policies.json").get("policies") or {}
         if self._serial_mode:
             return
         for modem in discovered:
             device_id = modem["id"]
             wanted = desired_devices.get(device_id) or {}
+            if policies or (self.root / "sim-policies.json").exists():
+                # Read base state AFTER policy: a normal-mode PUT publishes data-off
+                # before removing the overlay, so never combine old base with new policy.
+                latest = read_json(getattr(self, "device_desired_path", self.root / "devices-desired.json")).get("devices") or {}
+                wanted = latest.get(device_id) or wanted
             plan = self.device_capability_plan(wanted)
             data_enabled = plan["cellular_data_enabled"]
             radio_enabled = plan["radio_enabled"]
@@ -1711,8 +1731,16 @@ class Orchestrator:
             if through_modemmanager:
                 obj = self.modemmanager_modem_for_tty(modem["tty"])
                 if not obj:
+                    self.cellular_states[device_id] = {}
+                    self.radio_states.pop(device_id, None)
+                    desired_devices[device_id] = self.sim_policy_intent(wanted, "", policies)
                     continue
                 snapshot = self.modem_snapshot(modem)
+                self.cellular_states[device_id] = snapshot
+                wanted = self.sim_policy_intent(wanted, snapshot.get("sim_imsi", ""), policies)
+                desired_devices[device_id] = wanted
+                plan = self.device_capability_plan(wanted)
+                data_enabled, radio_enabled = plan["cellular_data_enabled"], plan["radio_enabled"]
                 observed = snapshot.get("radio_enabled") if snapshot.get("available") else None
                 if observed == radio_enabled:
                     self.radio_states[device_id] = radio_enabled
@@ -1750,6 +1778,12 @@ class Orchestrator:
             self.radio_states[device_id] = radio_enabled
             if through_modemmanager:
                 fresh = self.modem_snapshot(modem)
+                # A SIM replacement between enabling RF and connecting data must not
+                # inherit the previous card's service decision.
+                wanted = self.sim_policy_intent(desired_devices.get(device_id) or {},
+                                               fresh.get("sim_imsi", ""), policies)
+                desired_devices[device_id] = wanted
+                data_enabled = self.device_capability_plan(wanted)["cellular_data_enabled"]
                 if radio_enabled and data_enabled:
                     self.ensure_modem_data(modem, fresh)
                 else:
@@ -2971,6 +3005,9 @@ class Orchestrator:
 
             self.apply_device_radios(discovered, active_desired,
                                      through_modemmanager=cellular_required)
+            desired_devices.update(active_desired)
+            plan = self.capability_plan(active_desired)
+            vowifi_required = self.country_egress_required(desired, plan)
             # Country egress only exists to carry VoWiFi IKE/ePDG traffic.
             proxy_desired = desired
             if not vowifi_required:
@@ -3000,7 +3037,7 @@ class Orchestrator:
         stamps = []
         for path in (self.desired_path, self.device_desired_path,
                      self.data / "config.yaml", self.reselect_path,
-                     self.bridge_restart_request_dir):
+                     self.bridge_restart_request_dir, self.root / "sim-policies.json"):
             try:
                 stamps.append(path.stat().st_mtime)
             except OSError:
