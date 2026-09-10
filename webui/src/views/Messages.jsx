@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../api.js'
+import { linePresent } from '../simSelection.js'
 import SimSelector from './SimSelector.jsx'
 import { useI18n } from '../i18n.jsx'
 
@@ -33,6 +34,7 @@ export default function Messages({ selected, subscribe, showToast, instances, ca
     && device.device_type === 'modem'
     && String(device.instance_id || '') === String(id || ''))
   const cellularAvailable = Boolean(selectedDevice)
+  const connected = linePresent(selected, cards, devices)
 
   const loadThreads = useCallback(async (showLoading = false) => {
     if (!id) return
@@ -107,7 +109,7 @@ export default function Messages({ selected, subscribe, showToast, instances, ca
   const send = async () => {
     // React state is updated asynchronously, so `sending` alone leaves a short window where
     // a double click or a repeating Enter key can submit the same billable SMS twice.
-    if (sendingRef.current) return
+    if (sendingRef.current || !connected) return
     const to = peer || newTo
     if (!to || !text) return
     const forId = id
@@ -187,7 +189,7 @@ export default function Messages({ selected, subscribe, showToast, instances, ca
   if (loadErrors?.instances && !id) return <p className="u-error">{tr('Loading failed')}</p>
   if (!id) return (
     <div>
-      <SimSelector instances={instances} cards={cards} devices={devices} selected={selected} setSelected={setSelected} />
+      <SimSelector includeOffline instances={instances} cards={cards} devices={devices} selected={selected} setSelected={setSelected} />
       <div style={{ color: 'var(--text-dim)' }}>{tr('Select a SIM / line to view and send messages.')}</div>
     </div>
   )
@@ -195,8 +197,9 @@ export default function Messages({ selected, subscribe, showToast, instances, ca
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ flexShrink: 0 }}>
-        <SimSelector instances={instances} cards={cards} devices={devices} selected={selected} setSelected={setSelected} />
+        <SimSelector includeOffline instances={instances} cards={cards} devices={devices} selected={selected} setSelected={setSelected} />
       </div>
+      {!connected && <p role="status">{tr('Device disconnected. Saved messages remain available; reconnect to send and receive SMS.')}</p>}
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gridTemplateRows: 'minmax(0, 1fr)', gap: 16, flex: 1, minHeight: 0 }}>
       <div className="card" style={{ padding: 12, overflow: 'auto', minHeight: 0 }}>
         <button className="btn btn-primary" style={{ width: '100%', marginBottom: 8 }} onClick={() => { setPeer(null); setMsgs([]); setMessagesLoading(false) }}>+ {tr('New message')}</button>
@@ -322,7 +325,7 @@ export default function Messages({ selected, subscribe, showToast, instances, ca
               e.preventDefault()
               if (!e.repeat) send()
             }} style={{ flex: '1 1 220px' }} />
-          <button className="btn btn-primary" disabled={sending || (!peer && !newTo)} onClick={send}>{tr('Send')}</button>
+          <button className="btn btn-primary" disabled={!connected || sending || (!peer && !newTo)} onClick={send}>{tr('Send')}</button>
         </div>
       </div>
       </div>

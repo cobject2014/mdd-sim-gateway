@@ -3,6 +3,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 const STORAGE_KEY = 'mdd-language'
 
 const zh = {
+  'Device disconnected. Saved messages remain available; reconnect to send and receive SMS.': '设备未连接。仍可查看已保存的短信；重新连接后可收发短信。',
   'Phone number': '电话号码',
   'Mode': '模式',
   'SMS sending and receiving use the cellular network. VoWiFi is not enabled in this mode; its draft configuration is not required. Select normal mode above to edit VoWiFi settings.': '短信通过蜂窝网络接收和发送。此模式未启用 VoWiFi，无需完成其草稿配置。如需编辑 VoWiFi 设置，请在上方切换至常规模式。',

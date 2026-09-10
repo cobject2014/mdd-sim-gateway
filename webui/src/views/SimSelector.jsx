@@ -1,15 +1,14 @@
 import React, { useEffect } from 'react'
 import { useI18n } from '../i18n.jsx'
+import { selectableLines, linePresent } from '../simSelection.js'
 import { deviceSummary } from '../deviceState.js'
 
 // Per-page SIM/line picker for multi-SIM setups. Labels each line with the physical reader
 // it currently occupies (from the detected-cards state) so it's clear which reader's engine
 // (docker container) will handle calls/SMS/logs. Switches the global `selected` instance.
 //
-// Only lines whose physical reader is currently PRESENT are listed — a provisioned line
-// whose reader/card is unplugged is dropped from the dropdown (its config stays under SIM
-// Config and it reappears when the reader returns).
-export default function SimSelector({ instances = [], cards = [], devices = [], selected, setSelected, label = 'Active SIM / line' }) {
+// History pages can retain saved lines when their hardware is disconnected.
+export default function SimSelector({ instances = [], cards = [], devices = [], selected, setSelected, label = 'Active SIM / line', includeOffline = false }) {
   const { t, language } = useI18n()
   // A modem can expose its physical SIM through ModemManager while its optional VoWiFi
   // PC/SC bridge has no card. Treat either source as live so 4G-only calls/SMS history
@@ -19,7 +18,7 @@ export default function SimSelector({ instances = [], cards = [], devices = [], 
   const deviceFor = (i) => devices.find((d) => d.present &&
     String(d.instance_id || '') === String(i.id))
   const sourceFor = (i) => readerFor(i) || deviceFor(i)
-  const live = instances.filter((i) => sourceFor(i))
+  const live = selectableLines(instances, cards, devices, includeOffline)
   const deviceName = (c) => {
     if (!c) return t('Unknown device')
     if (/SCR Prime/i.test(c.name || '')) return language === 'zh' ? '三体电子 SCR Prime 读卡器' : '3T Electronics SCR Prime reader'
@@ -42,11 +41,11 @@ export default function SimSelector({ instances = [], cards = [], devices = [], 
       <select value={id || ''} onChange={(e) => setSelected(e.target.value)} style={{ flex: 1, maxWidth: 460 }}>
         {!id && <option value="">{t('— select —')}</option>}
         {live.map((i) => {
-          const c = sourceFor(i)
+          const c = sourceFor(i) || devices.find(d => String(d.instance_id || '') === String(i.id))
           const tail = numberTail(i)
           const device = deviceFor(i)
           // Instance status describes the VoWiFi engine, not cellular SMS availability.
-          const statusLabel = device ? deviceSummary(device).label : null
+          const statusLabel = !linePresent(i, cards, devices) ? 'Device not connected' : device ? deviceSummary(device).label : null
           const st = statusLabel ? ` — ${t(statusLabel)}` : ''
           return <option key={i.id} value={i.id}>{deviceName(c)} · {lineName(i)}{tail ? ` · ••••${tail}` : ''}{st}</option>
         })}
