@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react'
 import { useI18n } from '../i18n.jsx'
+import { deviceSummary } from '../deviceState.js'
 
 // Per-page SIM/line picker for multi-SIM setups. Labels each line with the physical reader
 // it currently occupies (from the detected-cards state) so it's clear which reader's engine
@@ -43,7 +44,10 @@ export default function SimSelector({ instances = [], cards = [], devices = [], 
         {live.map((i) => {
           const c = sourceFor(i)
           const tail = numberTail(i)
-          const st = i.status?.label ? ` — ${t(i.status.label)}` : ''
+          const device = deviceFor(i)
+          // Instance status describes the VoWiFi engine, not cellular SMS availability.
+          const statusLabel = device ? deviceSummary(device).label : null
+          const st = statusLabel ? ` — ${t(statusLabel)}` : ''
           return <option key={i.id} value={i.id}>{deviceName(c)} · {lineName(i)}{tail ? ` · ••••${tail}` : ''}{st}</option>
         })}
       </select>
