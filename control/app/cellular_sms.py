@@ -517,7 +517,29 @@ class Scanner:
                 else:
                     sms = _run_json(["-s", sms_path], self.runner).get("sms") or {}
                     content, props = sms.get("content") or {}, sms.get("properties") or {}
+                    # Multipart SMS must finish assembling before import or detail caching.
+                    if str(props.get("state") or "").lower() == "receiving":
+                        self._details.pop(key, None)
+                        continue
                     text, peer = str(content.get("text") or ""), str(content.get("number") or "")
+                    if text == "--":
+                        # mmcli renders missing text as "--", which is also valid literal text.
+                        # Read the raw property to distinguish the two without losing messages.
+                        try:
+                            raw = self.runner([
+                                "busctl", "--system", "get-property",
+                                "org.freedesktop.ModemManager1", sms_path,
+                                "org.freedesktop.ModemManager1.Sms", "Text",
+                            ], capture_output=True, text=True, timeout=10, check=False)
+                            value = raw.stdout.strip()
+                            if raw.returncode or not value.startswith('s '):
+                                raise ValueError("SMS text unavailable")
+                            text = json.loads(value[2:])
+                            if not isinstance(text, str):
+                                raise ValueError("Invalid SMS text")
+                        except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+                            self._details.pop(key, None)
+                            continue
                     if not text.strip():
                         self._details.pop(key, None)
                         continue
