@@ -1,0 +1,8 @@
+# Upstream fixes integration plan
+
+Scope: preserve IMSI SMS-only mode, Bark, offline history, accurate status and overview filter. Do not enable MMS or cellular data. Integrate on an isolated branch, verify each batch before deployment.
+
+1. Cellular safety and identity: backport e2b7cd4, 0838f29, 3093b55, cbf7da6 with focused modem tests.
+2. SMS reliability: late multipart handling and stable subscriber-scoped identity; integrate storage policy only with upgrade-safe keep default, without pulling MMS data connections into SMS-only mode. Test duplicate notification suppression and migration.
+3. Reliability: AMI cleanup and recovery isolation, preserving local Bark delivery. Run focused and combined regressions.
+4. Review diff, retain rollback backup, deploy validated batches and verify live settings and UI, commit and push batch history.
