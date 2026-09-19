@@ -24,3 +24,5 @@ The larger v1.10 SMS identity/storage migration remains isolated on local branch
 - Recovery isolation remains the next separate batch; do not mix it into this database rollout.
 
 Final local validation: 192 focused tests passed; full suite 1057 tests with the identical 13 baseline failures/errors. Independent review cleared the generation and creation-tracking fixes.
+
+Deployment verified on 2026-09-19: schema 5, 44 messages, 60 legacy markers, integrity ok, keep policy; control startup completed without tracebacks and both existing VoWiFi engines registered. Rollback database/source/image backups are named before-upstream-batch2-20260919. No external SMS or push test was sent.
