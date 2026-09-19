@@ -282,6 +282,10 @@ function Discovering({ t }) {
 
 export function UnifiedOverview({ devices, discovering, loadErrors, refreshDevices, setView, showToast, instances, setSelectedDeviceId, setSelected, subscribe }) {
   const { t } = useI18n()
+  const [normalOnly, setNormalOnly] = useState(() => {
+    try { return localStorage.getItem('mdd-overview-normal-only') === 'true' } catch { return false }
+  })
+  const visibleDevices = normalOnly ? devices.filter(d => deviceSummary(d).state === 'on') : devices
   // The backend may already know the physical devices while its first card scan is still in
   // progress. Do not render those partial rows as authoritative "No SIM" results.
   const pending = discovering
@@ -295,9 +299,16 @@ export function UnifiedOverview({ devices, discovering, loadErrors, refreshDevic
     <div className="u-metrics">
       {[[t('Devices'), counts.devices], [t('Cellular registered count'), counts.cellular], [t('VoWiFi online'), counts.vowifi], [t('Needs attention'), counts.attention]].map(([l,v]) => <div className="u-metric" key={l}><span>{l}</span><strong>{pending ? '—' : v}</strong></div>)}
     </div>
+    <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+      <input type="checkbox" checked={normalOnly} onChange={e => {
+        setNormalOnly(e.target.checked)
+        try { localStorage.setItem('mdd-overview-normal-only', String(e.target.checked)) } catch {}
+      }} />{t('Only show normal devices')}
+    </label>
     {loadErrors?.devices && !devices.length ? <p className="u-error">{t('Loading failed')}</p> : pending ? <Discovering t={t} /> :
       !devices.length ? <Empty title={t('No communication devices found')} detail={t('Connect a modem or smart-card reader. Discovery updates automatically.')} /> :
-      <div className="u-device-grid">{devices.map((d, i) => <div className="card u-device-card" key={d.id}>
+      !visibleDevices.length ? <Empty title={t('No devices are currently registered')} detail={t('Uncheck the filter to show all devices.')} /> :
+      <div className="u-device-grid">{visibleDevices.map((d, i) => <div className="card u-device-card" key={d.id}>
         <div className="u-card-head"><div><h2>{deviceTitle(d, i)}</h2><p>{deviceIdentityLine(d, t)}</p></div><Badge state={deviceSummary(d).state}>{t(deviceSummary(d).label)}</Badge></div>
         <div className="u-card-body">{supportsCellular(d) && <CapabilitySwitch key={`${d.id}:cellular`} device={d} kind="cellular" compact onChanged={refreshDevices} showToast={showToast} />}<CapabilitySwitch key={`${d.id}:vowifi`} device={d} kind="vowifi" compact onChanged={refreshDevices} showToast={showToast} /><ServiceStatus device={d}/>{capability(d, 'vowifi').desired && <VowifiHistory instanceId={d.instance_id} subscribe={subscribe} compact />}
           <div className="u-details"><div className="u-detail"><span>{t('Carrier')}</span><b>{carrierLabel(d, t)}</b></div><div className="u-detail"><span>{t('Country exit')}</span><b className="u-proxy-node-text"><ProxyNodeName text={exitNodeLabel(d, t) || d.proxy_node || t('Not connected')} /></b></div></div>

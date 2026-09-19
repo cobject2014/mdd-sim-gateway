@@ -3,6 +3,9 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 const STORAGE_KEY = 'mdd-language'
 
 const zh = {
+  'Only show normal devices': '只显示正常设备',
+  'No devices are currently registered': '当前没有已注册的设备',
+  'Uncheck the filter to show all devices.': '取消勾选可显示全部设备。',
   'Device disconnected. Saved messages remain available; reconnect to send and receive SMS.': '设备未连接。仍可查看已保存的短信；重新连接后可收发短信。',
   'Phone number': '电话号码',
   'Mode': '模式',

@@ -8,6 +8,8 @@ layer by the caller (main.py).
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import shutil
 import sqlite3
 import threading
@@ -511,6 +513,27 @@ def add_imported_message(fingerprint: str, instance: str, direction: str, peer: 
     """Atomically import one external message once. The marker survives UI deletion so an
     old SMS still retained by the modem is not resurrected on every polling cycle."""
     with _lock, _conn() as c:
+        # ModemManager object paths change after reconnect/reset. A received SMS with a
+        # network timestamp has a stable identity independent of that temporary path.
+        # Scope to the saved SIM line; preserve existing semantics for outbound/undated SMS.
+        if direction == "in" and transport == "cellular" and int(ts) > 0:
+            identity = json.dumps([str(instance), peer, body, int(ts), transport],
+                                  ensure_ascii=False, separators=(",", ":"))
+            stable = "cellular-in-v2:" + hashlib.sha256(identity.encode()).hexdigest()
+            known = c.execute(
+                "INSERT OR IGNORE INTO message_imports(fingerprint,instance,imported_ts) VALUES(?,?,?)",
+                (stable, str(instance), int(time.time())),
+            )
+            if known.rowcount == 0:
+                return None
+            # Adopt rows imported by older versions without generating a new push event.
+            existing = c.execute(
+                "SELECT 1 FROM messages WHERE instance=? AND direction='in' AND peer=? "
+                "AND body=? AND ts=? AND transport='cellular' LIMIT 1",
+                (str(instance), peer, body, int(ts)),
+            ).fetchone()
+            if existing:
+                return None
         marker = c.execute(
             "INSERT OR IGNORE INTO message_imports(fingerprint,instance,imported_ts) VALUES(?,?,?)",
             (fingerprint, str(instance), int(time.time())),
