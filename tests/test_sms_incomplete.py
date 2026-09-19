@@ -13,7 +13,7 @@ class IncompleteSmsTests(unittest.TestCase):
             return Result(json.dumps({'sms': {'content': {'number': '#ClubSim', 'text': text},
                 'properties': {'state': state, 'pdu-type': 'deliver'}}}))
         scanner = Scanner(runner=runner, clock=lambda: 1)
-        scanner._topology = [('modem', 'card')]
+        scanner._topology = [('modem', 'card', '')]
         scanner._topology_expires = 100
         return scanner, [{'id': '3', 'iccid': 'card'}]
 
