@@ -29,15 +29,11 @@ class StoreMigrationTests(unittest.TestCase):
                 store.init()
 
             with sqlite3.connect(current) as connection:
-                columns = {row[1] for row in connection.execute(
-                    "PRAGMA table_info(local_modem_sms)")}
-                index_sql = connection.execute(
-                    "SELECT sql FROM sqlite_master WHERE name='idx_local_modem_sms_path'"
-                ).fetchone()[0]
-            self.assertIn("daemon_epoch", columns)
-            self.assertIn("message_id", columns)
-            self.assertIn("cancelled", columns)
-            self.assertIn("daemon_epoch", index_sql)
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
+                tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertNotIn("local_modem_sms", tables)
+            self.assertIn("modem_path", columns)
+            self.assertIn("modem_sms_path", columns)
 
     def test_previous_database_is_copied_once_and_preserved(self):
         with tempfile.TemporaryDirectory() as temp:

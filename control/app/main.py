@@ -1555,6 +1555,24 @@ def _join_sms_parts(bodies: list[str], seqs: list[int], total: int) -> str:
     return "".join(out)
 
 
+def _line_subscriber(iid: str) -> str:
+    """The SIM a line's messages belong to, for message identity: ICCID, else IMSI."""
+    inst = cfg.get_instance(iid) or {}
+    iccid = cellular_sms._normalize_iccid(inst.get("iccid"))
+    if iccid:
+        return f"iccid:{iccid}"
+    imsi = cellular_sms._normalize_imsi(inst.get("imsi"))
+    return f"imsi:{imsi}" if imsi else ""
+
+
+async def _publish_incoming_sms(rec: dict) -> None:
+    """Announce one newly stored inbound text, whichever transport delivered it."""
+    iid = str(rec["instance"])
+    await hub.broadcast({"type": "sms", "instance": iid, "message": rec})
+    await asyncio.to_thread(_harvest_allowance_reply, iid, rec["peer"])
+    _dispatch_push(notify_push.EV_INCOMING_SMS, iid, rec["peer"], rec["body"])
+
+
 async def sms_segment_reaper():
     """Store what a multi-part SMS collected when the rest of its parts never arrive.
 
@@ -1579,17 +1597,18 @@ async def sms_segment_reaper():
             log.info("incomplete multi-part SMS on line %s from %s: parts %s of %d — storing "
                      "what arrived", iid, group["peer"],
                      ",".join(str(n) for n in group["seqs"]), group["total"])
-            rec = await asyncio.to_thread(store.add_message, iid, "in", group["peer"], body,
-                                          ts=group["first_ts"])
+            rec = await asyncio.to_thread(
+                store.ingest_message, iid, "in", group["peer"], body, transport="vowifi",
+                sent_ts=group.get("sent_ts"), received_ts=group["first_ts"])
+            if rec is None:
+                continue
             # Keep the group addressable so the parts still in flight complete THIS message
             # rather than being published as a second fragment of the same text.
             if len(group["seqs"]) < group["total"]:
                 await asyncio.to_thread(
                     store.remember_partial_sms_group, iid, group["peer"], group["concat_ref"],
                     group["total"], rec["id"], group["seqs"], group["bodies"])
-            await hub.broadcast({"type": "sms", "instance": iid, "message": rec})
-            await asyncio.to_thread(_harvest_allowance_reply, iid, group["peer"])
-            _dispatch_push(notify_push.EV_INCOMING_SMS, iid, group["peer"], body)
+            await _publish_incoming_sms(rec)
 
 
 def _host_alert_summary(alerts: list[dict]) -> str:
@@ -1881,23 +1900,33 @@ def _save_host_alert_state(state: dict) -> None:
 async def cellular_sms_poller():
     """Import SMS received by the 4G modem even when its VoWiFi engine is stopped."""
     scanner = cellular_sms.Scanner(local_sms_tracker=store)
+
+    def ingest(record: dict) -> dict | None:
+        if record.get("data"):
+            # Binary/MMS handling is deliberately outside this rollout. Do not acknowledge
+            # or delete a payload until a supported archive path has stored it.
+            raise ValueError("Binary cellular SMS retained on modem")
+        return store.ingest_message(
+            record["instance"], record["direction"], record["peer"], record["body"],
+            transport="cellular", sent_ts=record["ts"] or None,
+            legacy_fingerprint=record.get("legacy_fingerprint"),
+            identity=record.get("identity"))
+
     while True:
         try:
-            discovered = await asyncio.to_thread(scanner.discover, cfg.list_instances())
-            for item in discovered:
-                rec = await asyncio.to_thread(
-                    store.add_imported_message, item["fingerprint"], item["instance"],
-                    item["direction"], item["peer"], item["body"], item["ts"],
-                    item["transport"])
-                if not rec:
-                    continue
-                await hub.broadcast({"type": "sms", "instance": rec["instance"],
-                                     "message": rec})
+            # One config read serves both the line list and the scanner's policy, so the
+            # operator's choice takes effect without restarting the control plane.
+            conf = await asyncio.to_thread(cfg.load)
+            settings = conf.get("settings") or {}
+            stored = await asyncio.to_thread(
+                scanner.poll, list((conf.get("instances") or {}).values()), ingest,
+                policy=cellular_sms.storage_policy(settings))
+            for rec in stored:
                 if rec["direction"] == "in":
-                    await asyncio.to_thread(_harvest_allowance_reply, rec["instance"],
-                                            rec["peer"])
-                    _dispatch_push(notify_push.EV_INCOMING_SMS, rec["instance"],
-                                   rec["peer"], rec["body"])
+                    await _publish_incoming_sms(rec)
+                else:
+                    await hub.broadcast({"type": "sms", "instance": rec["instance"],
+                                         "message": rec})
         except Exception as exc:  # noqa
             log.debug("cellular SMS poll failed: %r", exc)
         await asyncio.sleep(5)
@@ -2270,8 +2299,35 @@ async def update_automation_poller():
         await asyncio.sleep(max(300, UPDATE_CHECK_INTERVAL_SECONDS))
 
 
+def _keep_modem_storage_on_upgrade(previous_schema: int | None) -> bool:
+    """Leave modem SMS storage alone on an installation upgraded from before the policy existed.
+
+    Deleting imported objects is the right default, but switching it on silently during an
+    upgrade would empty every modem the first time the scanner runs -- including texts the
+    operator deliberately kept on a SIM. An upgraded installation therefore gets "keep" written
+    into its settings, visibly, and the release notes explain how to opt in to "delete". A new
+    installation (no history database yet) and an explicit choice, in settings or in
+    MDD_CELLULAR_SMS_STORAGE, are left as they are. Runs before the schema migration, so a
+    crash in between cannot lose the distinction.
+    """
+    if previous_schema is None or previous_schema >= 1:
+        return False
+    if os.environ.get(cellular_sms.STORAGE_POLICY_ENV, "").strip():
+        return False
+    if "cellular_sms_storage" in (cfg.get_settings() or {}):
+        return False
+    cfg.update_settings({"cellular_sms_storage": "keep"})
+    log.warning("upgraded installation: modem SMS storage policy set to 'keep'; set "
+                "settings.cellular_sms_storage to 'delete' to empty modem storage as "
+                "messages are imported")
+    return True
+
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    store.set_subscriber_resolver(_line_subscriber)
+    _keep_modem_storage_on_upgrade(store.schema_version())
     store.init()
     # An upgrade from an older/self-use build may inherit more than five running containers.
     # Keep every saved record, but stop excess engines before background recovery begins.
@@ -5084,7 +5140,7 @@ async def _send_sms_cellular(iid: str, to: str, text: str) -> dict:
     instances = await asyncio.to_thread(cfg.list_instances)
     result = await asyncio.to_thread(
         cellular_sms.send, instances, iid, to, text, local_sms_tracker=store)
-    reservation_id = result.pop("_reservation_id", None)
+    message_id = result.pop("message_id", None)
     if result.get("unavailable"):
         return {**result, "message": None}
 
@@ -5093,8 +5149,8 @@ async def _send_sms_cellular(iid: str, to: str, text: str) -> dict:
     # encourages a retry that may create a duplicate and an extra roaming charge.
     message_status = ("sent" if result.get("ok") else
                       "unknown" if result.get("uncertain") else "failed")
-    rec = (await asyncio.to_thread(store.local_modem_sms_message, reservation_id)
-           if reservation_id is not None else None)
+    rec = (await asyncio.to_thread(store.get_message, message_id)
+           if message_id is not None else None)
     if rec is None:
         rec = store.add_message(iid, "out", to, text, status=message_status,
                                 transport="cellular")
@@ -5961,6 +6017,7 @@ async def api_engine_event(payload: dict):
         # existed, where args carries no TP-DCS to judge by.
         pdu = sms_pdu.parse_event_args(args)
         segment = _concat_triplet(args)
+        sent_ts = sms_pdu.deliver_timestamp(pdu.tpdu_hex)
         if pdu.is_machine_payload or (not pdu.known and sms_pdu.looks_binary(text)):
             rec = await asyncio.to_thread(
                 store.add_binary_sms, iid, sender,
@@ -6003,22 +6060,26 @@ async def api_engine_event(payload: dict):
                 if rec:
                     await hub.broadcast({"type": "sms", "instance": iid, "message": rec})
                 return {"ok": True, "merged": f"{len(late['seqs'])}/{total}"}
-            parts = await asyncio.to_thread(store.add_sms_segment, iid, sender, ref, total,
-                                            seq, text)
-            if parts is None:
+            group = await asyncio.to_thread(store.add_sms_segment, iid, sender, ref, total,
+                                            seq, text, sent_ts=sent_ts, with_meta=True)
+            if group is None:
                 log.info("buffered part %d/%d of a multi-part SMS from %s (ref %d)",
                          seq, total, sender, ref)
                 return {"ok": True, "buffered": f"{seq}/{total}"}
             log.info("reassembled a %d-part SMS from %s (ref %d)", total, sender, ref)
-            text = "".join(parts)
+            text, sent_ts = "".join(group["bodies"]), group["sent_ts"]
         elif not text.strip():
             log.info("dropping empty-body inbound SMS (internal signalling / binary/OTA "
                      "SIM message — no displayable text)")
             return {"ok": True, "dropped": "empty_body"}
-        rec = store.add_message(iid, "in", sender, text)
-        await hub.broadcast({"type": "sms", "instance": iid, "message": rec})
-        await asyncio.to_thread(_harvest_allowance_reply, iid, sender)
-        _dispatch_push(notify_push.EV_INCOMING_SMS, iid, sender, text)
+        rec = await asyncio.to_thread(store.ingest_message, iid, "in", sender, text,
+                                      transport="vowifi", sent_ts=sent_ts)
+        if rec is None:
+            # A carrier re-delivery, or the modem holding this SIM already imported its copy.
+            log.info("inbound SMS from %s on line %s is already stored — not shown twice",
+                     sender, iid)
+            return {"ok": True, "duplicate": True}
+        await _publish_incoming_sms(rec)
     elif event == "sms_out" and len(args) >= 2:
         pass  # already stored by the send path
     elif event == "call_in":
