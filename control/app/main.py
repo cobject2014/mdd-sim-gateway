@@ -854,7 +854,7 @@ async def _auto_start_hotplugged_line(iid: str, *, rebuild_if_running: bool = Fa
         desired = device_state.desired()
         wanted = ((desired.get("devices") or {}).get(device_id)
                   or desired.get("defaults") or {})
-        if not wanted.get("vowifi_enabled", True):
+        if device_type != "reader" and not wanted.get("vowifi_enabled", True):
             return
         if not inst.get("enabled", True):
             return
@@ -891,11 +891,12 @@ def _line_auto_start_allowed(inst: dict) -> tuple[bool, str]:
         or str(item.get("matched") or "") == iid)), None)
     if card_info is None:
         return False, "no_card"
-    device_id, _device_type = _device_for_card(card_info, cards)
+    # Native reader switches are stored in inst.enabled, not modem desired defaults.
+    device_id, device_type = _device_for_card(card_info, cards)
     desired = device_state.desired()
     wanted = ((desired.get("devices") or {}).get(device_id)
               or desired.get("defaults") or {})
-    if not wanted.get("vowifi_enabled", True):
+    if device_type != "reader" and not wanted.get("vowifi_enabled", True):
         return False, "vowifi_disabled"
     return True, ""
 

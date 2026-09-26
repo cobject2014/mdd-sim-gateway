@@ -26,6 +26,8 @@ const zh = {
   "Cellular registered": "蜂窝已注册",
   "VoWiFi registered": "VoWiFi 已注册",
   "Waiting for cellular registration": "等待蜂窝驻网",
+  "VoWiFi line not running": "VoWiFi 线路未运行",
+  "VoWiFi needs attention": "VoWiFi 需要处理",
   "Waiting for VoWiFi registration": "等待 VoWiFi 注册",
   "VoWiFi not enabled": "VoWiFi 未启用",
   "Device status": "设备状态",

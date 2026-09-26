@@ -125,6 +125,35 @@ class BackgroundStartGuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 main._line_auto_start_allowed(inst), (False, "vowifi_disabled"))
 
+    async def test_enabled_native_reader_recovers_with_modem_defaults_off(self):
+        inst = {"id": "1", "iccid": "saved-card", "enabled": True}
+        card = {"name": "Alcor reader", "present": True, "iccid": "saved-card",
+                "hardware_kind": "reader", "matched": "1"}
+        main.hub.health_for("1").update({"frozen_code": "registering", "auto_retrying": True})
+        with patch.object(main.hub, "cards_list", return_value=[card]), \
+                patch.object(main.device_state, "desired", return_value={"defaults": {"vowifi_enabled": False}}), \
+                patch.object(main.cfg, "get_settings", return_value={}), \
+                patch.object(main, "_start_engine_checked") as start, \
+                patch.object(main.hub, "broadcast", new=AsyncMock()):
+            self.assertEqual(main._line_auto_start_allowed(inst), (True, ""))
+            await main._auto_recover_instance("1", inst, 60)
+        start.assert_called_once()
+        self.assertEqual(main.hub.status_cache["1"]["state"], "REGISTERING")
+
+    async def test_enabled_native_reader_hotplug_ignores_modem_default(self):
+        inst = {"id": "1", "iccid": "saved-card", "enabled": True}
+        card = {"name": "Alcor reader", "present": True, "iccid": "saved-card", "hardware_kind": "reader"}
+        with patch.object(main.hub, "cards_list", return_value=[card]), \
+                patch.object(main.device_state, "desired", return_value={"defaults": {"vowifi_enabled": False}}), \
+                patch.object(main.cfg, "get_instance", return_value=inst), \
+                patch.object(main.cfg, "get_settings", return_value={}), \
+                patch.object(main.engine, "is_running", return_value=False), \
+                patch.object(main.asyncio, "sleep", new=AsyncMock()), \
+                patch.object(main, "_start_engine_checked") as start, \
+                patch.object(main.hub, "broadcast", new=AsyncMock()):
+            await main._auto_start_hotplugged_line("1")
+        start.assert_called_once()
+
     async def test_auto_recovery_rechecks_a_transiently_absent_card(self):
         inst = {"id": "offline", "iccid": "saved-card", "enabled": True}
         main.hub.health_for("offline").update({

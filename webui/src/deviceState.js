@@ -11,6 +11,9 @@ export function deviceSummary(device) {
   const cellular = cellularRegistered(device), vowifi = vowifiRegistered(device)
   if (cellular || vowifi) return {state:'on', label:cellular && vowifi ? 'Both networks registered' : cellular ? 'Cellular registered' : 'VoWiFi registered'}
   if (device?.device_type !== 'reader') return {state:radioOff(device) ? 'off' : 'starting', label:radioOff(device) ? 'Cellular radio off' : 'Waiting for cellular registration'}
+  const wifi = cap(device, 'vowifi')
+  if (wifi.desired && wifi.actual === 'degraded') return {state:'error', label:'VoWiFi line not running'}
+  if (wifi.desired && wifi.actual === 'error') return {state:'error', label:'VoWiFi needs attention'}
   return {state:cap(device,'vowifi').desired ? 'starting' : 'off', label:cap(device,'vowifi').desired ? 'Waiting for VoWiFi registration' : 'VoWiFi not enabled'}
 }
 export function mobileDataAddress(device) {

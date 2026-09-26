@@ -26,3 +26,10 @@ test('missing radio status is not advertised as radio on', () => {
   assert.equal(radioLabel({present:true, device_type:'modem'}), 'Waiting for radio status')
   assert.equal(smsReceiveReady({...modem, present:false, sms:{receive_ready:true}}), false)
 })
+
+test('an enabled stopped reader is not reported as waiting for registration', () => {
+  assert.deepEqual(deviceSummary({device_type:'reader', capabilities:{vowifi:{desired:true, actual:'degraded'}}}),
+    {state:'error', label:'VoWiFi line not running'})
+  assert.deepEqual(deviceSummary({device_type:'reader', capabilities:{vowifi:{desired:true, actual:'error'}}}),
+    {state:'error', label:'VoWiFi needs attention'})
+})
